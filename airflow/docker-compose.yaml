@@ -73,6 +73,23 @@ x-airflow-common: &airflow-common
       condition: service_healthy
 
 services:
+  redis:
+      image: redis:latest
+      ports:
+        - "6379:6379"
+      healthcheck:
+        test: ["CMD", "redis-cli", "ping"]
+        interval: 5s
+        timeout: 30s
+        retries: 50
+      restart: always
+
+  insight:
+    image: redis/redisinsight:latest
+    ports:
+      - "5540:5540"
+    restart: always
+
   postgres:
     image: postgres:13
     ports:
@@ -89,16 +106,7 @@ services:
       retries: 5
     restart: always
 
-  redis:
-    image: redis:latest
-    ports:
-      - 6379:6379
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 30s
-      retries: 50
-    restart: always
+    
 
   airflow-webserver:
     <<: *airflow-common
