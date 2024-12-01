@@ -124,7 +124,6 @@ def rearrange_json_data(output_folder):
 def push_to_redis(output_folder):
     import json
     import os
-    import redis
     
     # Chemin du fichier JSON réarrangé
     rearranged_file_path = os.path.join(output_folder, 'donnees_api_rearranged.json')
