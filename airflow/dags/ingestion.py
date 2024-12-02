@@ -3,10 +3,9 @@ import os
 import json
 import requests
 import redis
-import csv
 import pandas as pd
 import json
-import os
+import re
 
 from airflow import DAG
 from airflow.operators.python_operator import PythonOperator, BranchPythonOperator
@@ -227,6 +226,70 @@ def filter_and_convert_to_json(output_folder, input_filename, output_filename):
 
 
 
+def reformat_json(output_folder, input_filename, output_filename):
+    input_filepath = os.path.join(output_folder, input_filename)
+    output_filepath = os.path.join(output_folder, output_filename)
+
+    # Vérifier si le fichier existe
+    if not os.path.exists(input_filepath):
+        print(f"Fichier {input_filepath} introuvable.")
+        return
+
+    # Charger le fichier JSON
+    with open(input_filepath, 'r', encoding='utf-8') as json_file:
+        data = json.load(json_file)
+
+    # Fonction pour extraire la date et le lien à partir du contenu
+    def extract_date_and_link(content):
+        # Expression régulière pour capturer la date et le lien
+        date_pattern = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"  # format de la date
+        link_pattern = r"http[s]?://[^\s]+"  # URL
+        date_match = re.search(date_pattern, content)
+        link_match = re.search(link_pattern, content)
+        
+        date = date_match.group(0) if date_match else None
+        link = link_match.group(0) if link_match else None
+        
+        return date, link
+
+    # Réorganiser les données pour chaque entreprise
+    for company, articles in data.items():
+        for article in articles:
+            title = article.get("title")
+            author = article.get("author")
+            date = article.get("date")
+            link = article.get("link")
+            content = article.get("content", "")
+
+            # Si le titre est NaN, réorganiser les informations
+            if pd.isna(title):
+                # Le titre vient de l'auteur
+                article["title"] = author
+                # L'auteur vient du lien
+                article["author"] = link
+                # Extraire la date et le lien du contenu
+                extracted_date, extracted_link = extract_date_and_link(content)
+                article["date"] = extracted_date if extracted_date else date
+                article["link"] = extracted_link if extracted_link else link
+
+            # Si le titre est non défini mais qu'il existe un author ou un link non valide, réorganiser
+            if not title and author and link:
+                article["title"] = author
+                article["author"] = link
+                extracted_date, extracted_link = extract_date_and_link(content)
+                article["date"] = extracted_date if extracted_date else date
+                article["link"] = extracted_link if extracted_link else link
+
+    # Sauvegarder le JSON réorganisé dans un nouveau fichier
+    with open(output_filepath, 'w', encoding='utf-8') as json_file:
+        json.dump(data, json_file, ensure_ascii=False, indent=4)
+
+    print(f"Les données ont été réorganisées et enregistrées dans {output_filepath}.")
+
+
+
+
+
 # Paramètres par défaut du DAG
 default_args_dict = {
     'start_date': datetime.datetime(2020, 6, 25, 0, 0, 0),
@@ -301,6 +364,18 @@ filter_and_convert_task = PythonOperator(
     trigger_rule='none_failed_min_one_success'  # Exécuter cette tâche même si certaines échouent
 )
 
+reformat_json_task = PythonOperator(
+    task_id='reformat_json',
+    python_callable=reformat_json,
+    op_kwargs={
+        'output_folder': '/opt/airflow/dags',
+        'input_filename': 'filtered_bloomberg_articles.json',
+        'output_filename': 'filtered_bloomberg_articles.json'
+    },
+    dag=dag,
+    trigger_rule='none_failed_min_one_success'  # Exécuter cette tâche même si certaines échouent
+)
+
 
 
 end_task = DummyOperator(
@@ -317,3 +392,5 @@ skip_fetch_task >> clean_task
 clean_task >> rearrange_task
 rearrange_task >> push_to_redis_task
 push_to_redis_task >> end_task
+
+filter_and_convert_task >> reformat_json_task >> end_task

@@ -1760,11 +1760,8 @@
             1388413800,
             1388500200
         ],
-        "symbol": "MSFT",
         "end": null,
-        "start": null,
-        "previousClose": null,
-        "chartPreviousClose": 29.57,
+        "symbol": "MSFT",
         "close": [
             29.86,
             29.81,
@@ -3523,7 +3520,10 @@
             37.29,
             37.29,
             37.41
-        ]
+        ],
+        "start": null,
+        "previousClose": null,
+        "chartPreviousClose": 29.12
     },
     "GOOGL": {
         "dataGranularity": 300,
@@ -5291,11 +5291,8 @@
             1388413800,
             1388500200
         ],
-        "symbol": "GOOGL",
         "end": null,
-        "start": null,
-        "previousClose": null,
-        "chartPreviousClose": 12.128,
+        "symbol": "GOOGL",
         "close": [
             11.701,
             12.094,
@@ -7059,7 +7056,10 @@
             27.988,
             27.764,
             28.046
-        ]
+        ],
+        "start": null,
+        "previousClose": null,
+        "chartPreviousClose": 12.032
     },
     "AAPL": {
         "dataGranularity": 300,
@@ -8827,11 +8827,8 @@
             1388413800,
             1388500200
         ],
-        "symbol": "AAPL",
         "end": null,
-        "start": null,
-        "previousClose": null,
-        "chartPreviousClose": 3.279,
+        "symbol": "AAPL",
         "close": [
             2.993,
             3.059,
@@ -10595,6 +10592,9 @@
             20.003,
             19.804,
             20.036
-        ]
+        ],
+        "start": null,
+        "previousClose": null,
+        "chartPreviousClose": 3.261
     }
 }
