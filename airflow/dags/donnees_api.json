@@ -1,5 +1,6 @@
 {
     "MSFT": {
+        "dataGranularity": 300,
         "timestamp": [
             1167834600,
             1167921000,
@@ -1759,9 +1760,8 @@
             1388413800,
             1388500200
         ],
-        "end": null,
         "symbol": "MSFT",
-        "dataGranularity": 300,
+        "end": null,
         "start": null,
         "previousClose": null,
         "chartPreviousClose": 29.57,
@@ -3526,6 +3526,7 @@
         ]
     },
     "GOOGL": {
+        "dataGranularity": 300,
         "timestamp": [
             1167834600,
             1167921000,
@@ -5290,9 +5291,8 @@
             1388413800,
             1388500200
         ],
-        "end": null,
         "symbol": "GOOGL",
-        "dataGranularity": 300,
+        "end": null,
         "start": null,
         "previousClose": null,
         "chartPreviousClose": 12.128,
@@ -7062,6 +7062,7 @@
         ]
     },
     "AAPL": {
+        "dataGranularity": 300,
         "timestamp": [
             1167834600,
             1167921000,
@@ -8826,9 +8827,8 @@
             1388413800,
             1388500200
         ],
-        "end": null,
         "symbol": "AAPL",
-        "dataGranularity": 300,
+        "end": null,
         "start": null,
         "previousClose": null,
         "chartPreviousClose": 3.279,

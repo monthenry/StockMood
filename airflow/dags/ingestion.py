@@ -3,6 +3,11 @@ import os
 import json
 import requests
 import redis
+import csv
+import pandas as pd
+import json
+import os
+
 from airflow import DAG
 from airflow.operators.python_operator import PythonOperator, BranchPythonOperator
 from airflow.operators.dummy_operator import DummyOperator
@@ -158,6 +163,68 @@ def push_to_redis(output_folder):
         
         print(f"Données pour {entreprise} ajoutées à Redis sous la clé {redis_key}.")
 
+import pandas as pd
+import json
+import os
+
+def filter_and_convert_to_json(output_folder, input_filename, output_filename):
+    input_filepath = os.path.join(output_folder, input_filename)
+    output_filepath = os.path.join(output_folder, output_filename)
+
+    # Vérifier si le fichier existe
+    if not os.path.exists(input_filepath):
+        print(f"Fichier {input_filepath} introuvable.")
+        return
+
+    # Charger le fichier CSV avec pandas
+    df = pd.read_csv(input_filepath, usecols=['title', 'author', 'date', 'link', 'content'])
+
+    # Créer un dictionnaire pour stocker les articles filtrés par entreprise
+    articles_by_company = {
+        "GOOGL": [],
+        "MSFT": [],
+        "AAPL": []
+    }
+
+    # Itérer sur chaque ligne du DataFrame et vérifier le contenu
+    for _, row in df.iterrows():
+        content = row['content']
+        
+        # Vérifier que 'content' est une chaîne de caractères (pas NaN, None, ou float)
+        if isinstance(content, str):
+            # Recherche des mots-clés dans 'content'
+            if 'Google' in content:
+                articles_by_company['GOOGL'].append({
+                    "title": row['title'],
+                    "author": row['author'],
+                    "date": row['date'],
+                    "link": row['link'],
+                    "content": row['content']
+                })
+            elif 'Microsoft' in content:
+                articles_by_company['MSFT'].append({
+                    "title": row['title'],
+                    "author": row['author'],
+                    "date": row['date'],
+                    "link": row['link'],
+                    "content": row['content']
+                })
+            elif 'Apple' in content:
+                articles_by_company['AAPL'].append({
+                    "title": row['title'],
+                    "author": row['author'],
+                    "date": row['date'],
+                    "link": row['link'],
+                    "content": row['content']
+                })
+
+    # Sauvegarder le dictionnaire en format JSON
+    with open(output_filepath, 'w', encoding='utf-8') as json_file:
+        json.dump(articles_by_company, json_file, ensure_ascii=False, indent=4)
+
+    print(f"Les données filtrées ont été enregistrées dans {output_filepath}.")
+
+
 
 
 # Paramètres par défaut du DAG
@@ -222,6 +289,17 @@ push_to_redis_task = PythonOperator(
 # Mettre à jour l'ordre des tâches
 
 
+filter_and_convert_task = PythonOperator(
+    task_id='filter_and_convert_to_json',
+    python_callable=filter_and_convert_to_json,
+    op_kwargs={
+        'output_folder': '/opt/airflow/dags',
+        'input_filename': 'aggregated_bloomberg_articles.csv',
+        'output_filename': 'filtered_bloomberg_articles.json'
+    },
+    dag=dag,
+    trigger_rule='none_failed_min_one_success'  # Exécuter cette tâche même si certaines échouent
+)
 
 
 
