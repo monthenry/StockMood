@@ -287,6 +287,40 @@ def reformat_json(output_folder, input_filename, output_filename):
     print(f"Les données ont été réorganisées et enregistrées dans {output_filepath}.")
 
 
+def perform_sentiment_analysis(output_folder):
+    import nltk
+    nltk.download('vader_lexicon')
+    from nltk.sentiment import SentimentIntensityAnalyzer
+    
+
+    # Initialiser l'analyseur de sentiment
+    sia = SentimentIntensityAnalyzer()
+
+    # Chemin du fichier JSON en entrée
+    input_file_path = os.path.join(output_folder, 'filtered_bloomberg_articles.json')
+    if not os.path.exists(input_file_path):
+        print(f"Fichier JSON {input_file_path} introuvable.")
+        return
+
+    # Charger les données
+    with open(input_file_path, 'r') as fichier_json:
+        data = json.load(fichier_json)
+
+    # Ajouter une analyse de sentiment pour chaque article
+    for symbol, articles in data.items():
+        for article in articles:
+            content = article.get('content', '')  # Contenu de l'article à analyser
+            sentiment_score = sia.polarity_scores(content)['compound']  # Score entre -1 et 1
+            sentiment_normalized = (sentiment_score + 1) / 2  # Normaliser entre 0 et 1
+            article['sentiment_score'] = sentiment_normalized
+
+    # Enregistrer le fichier enrichi
+    output_file_path = os.path.join(output_folder, 'sentiment_bloomberg_articles.json')
+    with open(output_file_path, 'w') as fichier_json:
+        json.dump(data, fichier_json, indent=4)
+
+    print(f"Analyse de sentiment ajoutée. Fichier sauvegardé dans {output_file_path}.")
+
 
 
 
@@ -375,6 +409,15 @@ reformat_json_task = PythonOperator(
     dag=dag,
     trigger_rule='none_failed_min_one_success'  # Exécuter cette tâche même si certaines échouent
 )
+sentiment_task = PythonOperator(
+    task_id='perform_sentiment_analysis',
+    python_callable=perform_sentiment_analysis,
+    op_kwargs={
+        'output_folder': '/opt/airflow/dags',
+    },
+    dag=dag,
+    trigger_rule='none_failed_min_one_success'  # Exécuter même si une autre tâche échoue
+)
 
 
 
@@ -393,4 +436,4 @@ clean_task >> rearrange_task
 rearrange_task >> push_to_redis_task
 push_to_redis_task >> end_task
 
-filter_and_convert_task >> reformat_json_task >> end_task
+filter_and_convert_task >> reformat_json_task >>sentiment_task >> end_task
