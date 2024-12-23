@@ -6,7 +6,7 @@ import redis
 import pandas as pd
 import json
 import re
-
+from pymongo import MongoClient
 from airflow import DAG
 from airflow.operators.python_operator import PythonOperator, BranchPythonOperator
 from airflow.operators.dummy_operator import DummyOperator
@@ -322,6 +322,34 @@ def perform_sentiment_analysis(output_folder):
     print(f"Analyse de sentiment ajoutée. Fichier sauvegardé dans {output_file_path}.")
 
 
+def push_to_mongo(output_folder):
+    # Chemin du fichier JSON enrichi
+    enriched_file_path = os.path.join(output_folder, 'sentiment_bloomberg_articles.json')
+    
+    if not os.path.exists(enriched_file_path):
+        print(f"Fichier JSON {enriched_file_path} introuvable.")
+        return
+
+    # Charger les données JSON
+    with open(enriched_file_path, 'r') as fichier_json:
+        data = json.load(fichier_json)
+
+    # Connexion à MongoDB
+    client = MongoClient("mongodb://root:example@mongo:27017/")
+    db = client["bloomberg_db"]  # Nom de la base de données
+    collection = db["sentiment_articles"]  # Nom de la collection
+
+    # Insérer les données dans MongoDB
+    for symbol, articles in data.items():
+        for article in articles:
+            # Ajout du champ 'symbol' pour chaque document
+            article['symbol'] = symbol
+            collection.insert_one(article)
+            print(f"Document ajouté à MongoDB : {article}")
+
+    print(f"Les données ont été insérées dans MongoDB dans la base 'bloomberg_db', collection 'sentiment_articles'.")
+
+
 
 
 # Paramètres par défaut du DAG
@@ -419,6 +447,17 @@ sentiment_task = PythonOperator(
     trigger_rule='none_failed_min_one_success'  # Exécuter même si une autre tâche échoue
 )
 
+push_to_mongo_task = PythonOperator(
+    task_id='push_to_mongo',
+    python_callable=push_to_mongo,
+    op_kwargs={
+        'output_folder': '/opt/airflow/dags',
+    },
+    dag=dag,
+    trigger_rule='none_failed_min_one_success'  # Exécuter même si une autre tâche échoue
+)
+
+
 
 
 end_task = DummyOperator(
@@ -436,4 +475,4 @@ clean_task >> rearrange_task
 rearrange_task >> push_to_redis_task
 push_to_redis_task >> end_task
 
-filter_and_convert_task >> reformat_json_task >>sentiment_task >> end_task
+filter_and_convert_task >> reformat_json_task >> sentiment_task >> push_to_mongo_task >> end_task
