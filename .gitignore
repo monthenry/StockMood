@@ -1,1 +1,3 @@
-data/bloomberg_data/
+data/bloomberg_data/20061020_20131126_bloomberg_news.tar.gz
+data/bloomberg_data/20061020_20131126_bloomberg_news/
+notebooks/*.csv
