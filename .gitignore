@@ -1,8 +1,8 @@
 notebooks/*.csv
-airflow/config/
-airflow/logs/
-airflow/plugins/
-airflow/data/bloomberg_data_src/20061020_20131126_bloomberg_news_combined.tar.gz
-airflow/data/bloomberg_data_src/20061020_20131126_bloomberg_news/
-airflow/data/*.csv
-airflow/data/*.json
+config/
+logs/
+plugins/
+data/bloomberg_data_src/20061020_20131126_bloomberg_news/
+data/bloomberg_data_src/20061020_20131126_bloomberg_news_combined.tar.gz
+data/*.csv
+data/*.json
