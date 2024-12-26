@@ -180,28 +180,40 @@ def push_to_redis(output_folder):
         
         print(f"Données pour {entreprise} ajoutées à Redis sous la clé {redis_key}.")
 
-def extract_archive(data_dir, bloomberg_dir, output_tar):
+# Extracts split parts from a folder into a combined tar.gz file and extracts its contents.
+def extract_archive(input_folder, output_folder, output_file):
+    # Check if the output tar file already exists
+    if os.path.exists(os.path.join(output_folder, output_file)):
+        print(f"{output_file} already exists. Skipping extraction.")
+        return
+
     # Combine split parts into the original tar.gz file
-    with open(output_tar, "wb") as outfile:
-        for part in sorted(os.listdir(bloomberg_dir)):
+    with open(os.path.join(output_folder, output_file), "wb") as outfile:
+        for part in sorted(os.listdir(input_folder)):
             if part.startswith("20061020_20131126_bloomberg_news.tar.gz."):
-                part_path = os.path.join(bloomberg_dir, part)
+                part_path = os.path.join(input_folder, part)
                 with open(part_path, "rb") as infile:
                     outfile.write(infile.read())
 
     # Extract the tar.gz file
-    with tarfile.open(output_tar, "r:gz") as tar:
-        tar.extractall(bloomberg_dir)
+    with tarfile.open(os.path.join(output_folder, output_file), "r:gz") as tar:
+        tar.extractall(output_folder)
 
     print("Extraction complete.")
 
-def transform_to_csv(bloomberg_dir, csv_output_path):
+# Converts extracted article files to a CSV format.
+def transform_to_csv(input_folder, output_csv):
+    # Check if the output CSV file already exists
+    if os.path.exists(output_csv):
+        print(f"{output_csv} already exists. Skipping transformation.")
+        return
+
     # Initialize a list to store article data
     articles = []
 
     # Iterate over all date folders
-    for date_folder in os.listdir(bloomberg_dir):
-        date_path = os.path.join(bloomberg_dir, date_folder)
+    for date_folder in os.listdir(input_folder):
+        date_path = os.path.join(input_folder, date_folder)
         if os.path.isdir(date_path):
             # Iterate over all articles in the folder
             for article_file in os.listdir(date_path):
@@ -230,7 +242,7 @@ def transform_to_csv(bloomberg_dir, csv_output_path):
     df = pd.DataFrame(articles)
 
     # Save the DataFrame to a CSV file for future use
-    df.to_csv(csv_output_path, index=False, encoding="utf-8")
+    df.to_csv(output_csv, index=False, encoding="utf-8")
     print("CSV generation complete.")
 
 def filter_and_convert_to_json(output_folder, input_filename, output_filename):
@@ -477,9 +489,9 @@ extract_archive_task = PythonOperator(
     task_id='extract_archive',
     python_callable=extract_archive,
     op_kwargs={
-        'data_dir': "/opt/airflow/data",
-        'bloomberg_dir': "/opt/airflow/data/bloomberg_data_src/",
-        'output_tar': "/opt/airflow/data/bloomberg_data_src/20061020_20131126_bloomberg_news_combined.tar.gz"
+        'input_folder': "/opt/airflow/data/bloomberg_data_src",
+        'output_folder': "/opt/airflow/data",
+        'output_file': "20061020_20131126_bloomberg_news.tar.gz"
     },
     dag=dag
 )
@@ -488,8 +500,8 @@ transform_to_csv_task = PythonOperator(
     task_id='transform_to_csv',
     python_callable=transform_to_csv,
     op_kwargs={
-        'bloomberg_dir': "/opt/airflow/data/bloomberg_data_src/20061020_20131126_bloomberg_news",
-        'csv_output_path': "/opt/airflow/data/bloomberg_articles_aggregated.csv"
+        'input_folder': "/opt/airflow/data/20061020_20131126_bloomberg_news",
+        'output_csv': "/opt/airflow/data/bloomberg_articles_aggregated.csv"
     },
     dag=dag
 )

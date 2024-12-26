@@ -2,7 +2,7 @@ notebooks/*.csv
 config/
 logs/
 plugins/
-data/bloomberg_data_src/20061020_20131126_bloomberg_news/
-data/bloomberg_data_src/20061020_20131126_bloomberg_news_combined.tar.gz
+data/20061020_20131126_bloomberg_news/
+data/20061020_20131126_bloomberg_news.tar.gz
 data/*.csv
 data/*.json
