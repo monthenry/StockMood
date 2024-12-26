@@ -10,7 +10,10 @@ from pymongo import MongoClient
 from airflow import DAG
 from airflow.operators.python_operator import PythonOperator, BranchPythonOperator
 from airflow.operators.dummy_operator import DummyOperator
-
+import pandas as pd
+import json
+import os
+import tarfile
 
 # Fonction pour vérifier la connexion Internet
 def check_internet_connection():
@@ -20,14 +23,12 @@ def check_internet_connection():
     except requests.ConnectionError:
         return False
 
-
 # Fonction pour la branche : vérifie la connexion et décide quelle branche suivre
 def branch_check_internet(output_folder):
     if check_internet_connection():
         return 'fetch_and_save_json'
     else:
         return 'skip_fetch'
-
 
 # Fonction pour récupérer des données d'une API et les enregistrer dans un fichier JSON
 def fetch_and_save_json(output_folder):
@@ -47,7 +48,6 @@ def fetch_and_save_json(output_folder):
         print("Les données ont été enregistrées dans 'donnees_api.json'.")
     else:
         print(f"Échec de la récupération des données. Code statut HTTP : {response.status_code}")
-
 
 # Fonction pour nettoyer les données JSON
 def clean_json_data(output_folder):
@@ -81,7 +81,6 @@ def clean_json_data(output_folder):
         print("Les données inutiles ont été supprimées du fichier JSON.")
     else:
         print("Fichier JSON introuvable. Rien à nettoyer.")
-
 
 def rearrange_json_data(output_folder):
     from datetime import datetime
@@ -162,9 +161,58 @@ def push_to_redis(output_folder):
         
         print(f"Données pour {entreprise} ajoutées à Redis sous la clé {redis_key}.")
 
-import pandas as pd
-import json
-import os
+def extract_archive(data_dir, bloomberg_dir, output_tar):
+    # Combine split parts into the original tar.gz file
+    with open(output_tar, "wb") as outfile:
+        for part in sorted(os.listdir(bloomberg_dir)):
+            if part.startswith("20061020_20131126_bloomberg_news.tar.gz."):
+                part_path = os.path.join(bloomberg_dir, part)
+                with open(part_path, "rb") as infile:
+                    outfile.write(infile.read())
+
+    # Extract the tar.gz file
+    with tarfile.open(output_tar, "r:gz") as tar:
+        tar.extractall(bloomberg_dir)
+
+    print("Extraction complete.")
+
+def transform_to_csv(bloomberg_dir, csv_output_path):
+    # Initialize a list to store article data
+    articles = []
+
+    # Iterate over all date folders
+    for date_folder in os.listdir(bloomberg_dir):
+        date_path = os.path.join(bloomberg_dir, date_folder)
+        if os.path.isdir(date_path):
+            # Iterate over all articles in the folder
+            for article_file in os.listdir(date_path):
+                article_path = os.path.join(date_path, article_file)
+                if os.path.isfile(article_path):
+                    with open(article_path, "r", encoding="utf-8") as f:
+                        lines = f.readlines()
+                        # Ensure the article has the expected structure
+                        if len(lines) >= 4:
+                            title = lines[0].strip("-- ").strip()
+                            author = lines[1].strip("-- ").strip()
+                            date = lines[2].strip("-- ").strip()
+                            link = lines[3].strip("-- ").strip()
+                            content = "".join(lines[4:]).strip()
+
+                            # Append the article's data to the list
+                            articles.append({
+                                "title": title,
+                                "author": author,
+                                "date": date,
+                                "link": link,
+                                "content": content
+                            })
+
+    # Create a pandas DataFrame from the articles list
+    df = pd.DataFrame(articles)
+
+    # Save the DataFrame to a CSV file for future use
+    df.to_csv(csv_output_path, index=False, encoding="utf-8")
+    print("CSV generation complete.")
 
 def filter_and_convert_to_json(output_folder, input_filename, output_filename):
     input_filepath = os.path.join(output_folder, input_filename)
@@ -222,9 +270,6 @@ def filter_and_convert_to_json(output_folder, input_filename, output_filename):
         json.dump(articles_by_company, json_file, ensure_ascii=False, indent=4)
 
     print(f"Les données filtrées ont été enregistrées dans {output_filepath}.")
-
-
-
 
 def reformat_json(output_folder, input_filename, output_filename):
     input_filepath = os.path.join(output_folder, input_filename)
@@ -349,9 +394,7 @@ def push_to_mongo(output_folder):
 
     print(f"Les données ont été insérées dans MongoDB dans la base 'bloomberg_db', collection 'sentiment_articles'.")
 
-
-
-
+# Création du DAG
 # Paramètres par défaut du DAG
 default_args_dict = {
     'start_date': datetime.datetime(2020, 6, 25, 0, 0, 0),
@@ -412,7 +455,26 @@ push_to_redis_task = PythonOperator(
 )
 
 # Mettre à jour l'ordre des tâches
+extract_archive_task = PythonOperator(
+    task_id='extract_archive',
+    python_callable=extract_archive,
+    op_kwargs={
+        'data_dir': "../data/",
+        'bloomberg_dir': "../data/bloomberg_data/",
+        'output_tar': "../data/bloomberg_data/20061020_20131126_bloomberg_news_combined.tar.gz"
+    },
+    dag=dag
+)
 
+transform_to_csv_task = PythonOperator(
+    task_id='transform_to_csv',
+    python_callable=transform_to_csv,
+    op_kwargs={
+        'bloomberg_dir': "../data/bloomberg_data/",
+        'csv_output_path': "/opt/airflow/dags/aggregated_bloomberg_articles.csv"
+    },
+    dag=dag
+)
 
 filter_and_convert_task = PythonOperator(
     task_id='filter_and_convert_to_json',
@@ -457,15 +519,11 @@ push_to_mongo_task = PythonOperator(
     trigger_rule='none_failed_min_one_success'  # Exécuter même si une autre tâche échoue
 )
 
-
-
-
 end_task = DummyOperator(
     task_id='end',
     dag=dag,
     trigger_rule='none_failed_min_one_success'
 )
-
 
 # Définition de l'ordre des tâches
 branch_task >> [fetch_task, skip_fetch_task]
@@ -475,4 +533,4 @@ clean_task >> rearrange_task
 rearrange_task >> push_to_redis_task
 push_to_redis_task >> end_task
 
-filter_and_convert_task >> reformat_json_task >> sentiment_task >> push_to_mongo_task >> end_task
+extract_archive_task >> transform_to_csv_task >> filter_and_convert_task >> reformat_json_task >> sentiment_task >> push_to_mongo_task >> end_task
