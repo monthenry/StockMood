@@ -29,6 +29,20 @@ id -u
 
 Now edit the **.env** file and swap out 501 for your own.
 
+Run the following commands to clean up docker containers, images and volumes (use it with or without sudo depending on docker install):
+```sh
+sudo docker stop $(sudo docker ps -aq)
+sudo docker rm $(sudo docker ps -aq)
+sudo docker rmi $(sudo docker images -q)
+sudo docker compose down --volumes
+sudo docker volume prune -f
+```
+
+Run the following command to delete files from previous executions (while in the StockMood folder):
+```sh
+sudo rm -rf config logs plugins data/*.csv data/*.json data/*.tar.gz data/20061020_20131126_bloomberg_news
+```
+
 Run the following command to creat the volumes needed in order to send data to airflow:
 ```sh
 mkdir -p ./dags ./logs ./plugins
