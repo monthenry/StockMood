@@ -204,10 +204,10 @@ def extract_archive(input_folder, output_folder, output_file):
 
 # Converts extracted article files to a CSV format.
 def transform_to_csv(input_folder, output_csv):
-    # Check if the output CSV file already exists
-    if os.path.exists(output_csv):
-        print(f"{output_csv} already exists. Skipping transformation.")
-        return
+    # # Check if the output CSV file already exists
+    # if os.path.exists(output_csv):
+    #     print(f"{output_csv} already exists. Skipping transformation.")
+    #     return
 
     # Initialize a list to store article data
     articles = []
