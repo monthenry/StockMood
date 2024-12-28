@@ -9,6 +9,7 @@ import re
 from pymongo import MongoClient
 from airflow import DAG
 from airflow.operators.python_operator import PythonOperator, BranchPythonOperator
+from airflow.operators.bash_operator import BashOperator
 from airflow.operators.dummy_operator import DummyOperator
 import pandas as pd
 import json
@@ -484,15 +485,34 @@ push_to_redis_task = PythonOperator(
     trigger_rule='none_failed_min_one_success'
 )
 
-# Mettre à jour l'ordre des tâches
-extract_archive_task = PythonOperator(
+# # Mettre à jour l'ordre des tâches
+# extract_archive_task = PythonOperator(
+#     task_id='extract_archive',
+#     python_callable=extract_archive,
+#     op_kwargs={
+#         'input_folder': "/opt/airflow/data/bloomberg_data_src",
+#         'output_folder': "/opt/airflow/data",
+#         'output_file': "20061020_20131126_bloomberg_news.tar.gz"
+#     },
+#     dag=dag
+# )
+
+# Task to extract and combine the tar.gz file from split parts
+extract_archive_task = BashOperator(
     task_id='extract_archive',
-    python_callable=extract_archive,
-    op_kwargs={
-        'input_folder': "/opt/airflow/data/bloomberg_data_src",
-        'output_folder': "/opt/airflow/data",
-        'output_file': "20061020_20131126_bloomberg_news.tar.gz"
-    },
+    bash_command="""
+        OUTPUT_FOLDER="/opt/airflow/data"
+        INPUT_FOLDER="/opt/airflow/data/bloomberg_data_src"
+        OUTPUT_FILE="20061020_20131126_bloomberg_news.tar.gz"
+
+        if [ -f "${OUTPUT_FOLDER}/${OUTPUT_FILE}" ]; then
+            echo "${OUTPUT_FILE} already exists. Skipping extraction."
+        else
+            cat $(ls ${INPUT_FOLDER}/20061020_20131126_bloomberg_news.tar.gz.* | sort) > ${OUTPUT_FOLDER}/${OUTPUT_FILE}
+            tar -xzf ${OUTPUT_FOLDER}/${OUTPUT_FILE} -C ${OUTPUT_FOLDER}
+            echo "Extraction complete."
+        fi
+    """,
     dag=dag
 )
 
