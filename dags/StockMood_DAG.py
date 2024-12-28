@@ -523,7 +523,8 @@ transform_to_csv_task = PythonOperator(
         'input_folder': "/opt/airflow/data/20061020_20131126_bloomberg_news",
         'output_csv': "/opt/airflow/data/bloomberg_articles_aggregated.csv"
     },
-    dag=dag
+    dag=dag,
+    trigger_rule = 'all_success'
 )
 
 filter_and_convert_task = PythonOperator(
