@@ -1,6 +1,8 @@
 import datetime
 import os
 import json
+import datetime
+from math import exp
 import requests
 import redis
 import pandas as pd
@@ -363,42 +365,78 @@ def reformat_json(output_folder, input_filename, output_filename):
 
     print(f"Les données ont été réorganisées et enregistrées dans {output_filepath}.")
 
+def analyze_sentiment_relative_to_company_in_dag(output_folder, input_filename, company_aliases):
+    import nltk
+    from nltk.sentiment import SentimentIntensityAnalyzer
+    from nltk.tokenize import sent_tokenize
 
-def perform_sentiment_analysis(output_folder):
-    nltk.download('vader_lexicon')    
-
-    # Initialiser l'analyseur de sentiment
+    nltk.download('punkt')
+    nltk.download('punkt_tab')
+    nltk.download('vader_lexicon')
+    # Charger le fichier JSON contenant les articles
+    input_filepath = os.path.join(output_folder, input_filename)
+    
+    if not os.path.exists(input_filepath):
+        print(f"Fichier {input_filepath} introuvable.")
+        return
+    
+    with open(input_filepath, 'r', encoding='utf-8') as infile:
+        data = json.load(infile)
+    
     sia = SentimentIntensityAnalyzer()
 
-    # Chemin du fichier JSON en entrée
-    input_file_path = os.path.join(output_folder, 'bloomberg_articles_filtered.json')
-    if not os.path.exists(input_file_path):
-        print(f"Fichier JSON {input_file_path} introuvable.")
-        return
-
-    # Charger les données
-    with open(input_file_path, 'r') as fichier_json:
-        data = json.load(fichier_json)
-
-    # Ajouter une analyse de sentiment pour chaque article
+    # Traiter chaque entreprise et ses articles
     for symbol, articles in data.items():
+        company_name = company_aliases.get(symbol, symbol)  # Récupère le nom de l'entreprise ou utilise le symbole
         for article in articles:
-            content = article.get('content', '')  # Contenu de l'article à analyser
-            sentiment_score = sia.polarity_scores(content)['compound']  # Score entre -1 et 1
-            sentiment_normalized = (sentiment_score + 1) / 2  # Normaliser entre 0 et 1
-            article['sentiment_score'] = sentiment_normalized
+            #Vérifier si une note de sentiment existe déjà
+            if 'relative_sentiment' in article:
+                print(f"Sentiment déjà calculé pour l'article : {article.get('title', 'Sans titre')}")
+                continue
+            
+            content = article.get('content', '')
+            sentences = sent_tokenize(content)  # Diviser en phrases
+            relevant_sentiments = []
+            
+            # Analyser chaque phrase contenant le nom de l'entreprise
+            for sentence in sentences:
+                if company_name.lower() in sentence.lower():
+                    sentiment = sia.polarity_scores(sentence)['compound']
+                    relevant_sentiments.append(sentiment)
+            
+            # Calculer un score global relatif à l'entreprise
+            if relevant_sentiments:
+                average_sentiment = sum(relevant_sentiments) / len(relevant_sentiments)
+                normalized_sentiments = (average_sentiment + 1) / 2
+                num_sentences = len(relevant_sentiments)
+                
+                # Pondération : plus il y a de phrases, plus on garde le score moyen
+                weight = 1-exp(-num_sentences/4)  # Approche le score moyen avec plus de phrases
+                
+                adjusted_sentiment = weight * normalized_sentiments + (1 - weight) * 0.5
+                if (article.get('title')=='Motorola Mobility to Move to Merchandise Mart in Chicago'):
+                    print(f"Sentiment ajusté : {adjusted_sentiment}")
+            else:
+                # Aucun sentiment trouvé pour cette entreprise
+                adjusted_sentiment = 0.5  # Neutre
+            
+            # Enrichir l'article avec le sentiment relatif
+            article['relative_sentiment'] = adjusted_sentiment 
+            if (article.get('title')=='Motorola Mobility to Move to Merchandise Mart in Chicago'):
+                    print(article['relative_sentiment'])
+    
+    # Réécrire directement les données enrichies dans le fichier d'entrée
+    with open(input_filepath, 'w', encoding='utf-8') as outfile:
+        json.dump(data, outfile, ensure_ascii=False, indent=4)
+    
+    print(f"Les données enrichies avec les sentiments ont été enregistrées dans {input_filepath}.")
 
-    # Enregistrer le fichier enrichi
-    output_file_path = os.path.join(output_folder, 'bloomberg_articles_sentiment.json')
-    with open(output_file_path, 'w') as fichier_json:
-        json.dump(data, fichier_json, indent=4)
 
-    print(f"Analyse de sentiment ajoutée. Fichier sauvegardé dans {output_file_path}.")
 
 
 def push_to_mongo(output_folder):
     # Chemin du fichier JSON enrichi
-    enriched_file_path = os.path.join(output_folder, 'bloomberg_articles_sentiment.json')
+    enriched_file_path = os.path.join(output_folder, 'bloomberg_articles_filtered.json')
     
     if not os.path.exists(enriched_file_path):
         print(f"Fichier JSON {enriched_file_path} introuvable.")
@@ -427,7 +465,7 @@ def push_to_mongo(output_folder):
 # Paramètres par défaut du DAG
 default_args_dict = {
     'start_date': datetime.datetime(2020, 6, 25, 0, 0, 0),
-    'concurrency': 1,
+    'concurrency': 10,
     'schedule_interval': "0 0 * * *",
     'retries': 1,
     'retry_delay': datetime.timedelta(minutes=5),
@@ -436,7 +474,8 @@ default_args_dict = {
 dag = DAG(
     dag_id='StockMood_DAG',
     default_args=default_args_dict,
-    catchup=False
+    catchup=False,
+    max_active_tasks=10
 )
 
 # Tâches
@@ -550,14 +589,20 @@ reformat_json_task = PythonOperator(
     dag=dag,
     trigger_rule='none_failed_min_one_success'  # Exécuter cette tâche même si certaines échouent
 )
-sentiment_task = PythonOperator(
-    task_id='perform_sentiment_analysis',
-    python_callable=perform_sentiment_analysis,
+
+sentiment_analysis_task = PythonOperator(
+    task_id='analyze_sentiment_relative_to_company',
+    python_callable=analyze_sentiment_relative_to_company_in_dag,
     op_kwargs={
-        'output_folder': '/opt/airflow/data',
+        'output_folder': '/opt/airflow/data',  # Chemin du dossier où les fichiers JSON sont stockés
+        'input_filename': 'bloomberg_articles_filtered.json',  # Fichier JSON des articles à analyser
+        'company_aliases': {
+            "GOOGL": "Google",
+            "AAPL": "Apple",
+            "MSFT": "Microsoft"
+        }
     },
-    dag=dag,
-    trigger_rule='none_failed_min_one_success'  # Exécuter même si une autre tâche échoue
+    dag=dag
 )
 
 push_to_mongo_task = PythonOperator(
@@ -584,4 +629,4 @@ clean_task >> rearrange_task
 rearrange_task >> push_to_redis_task
 push_to_redis_task >> end_task
 
-extract_archive_task >> transform_to_csv_task >> filter_and_convert_task >> reformat_json_task >> sentiment_task >> push_to_mongo_task >> end_task
+extract_archive_task >> transform_to_csv_task >> filter_and_convert_task >> reformat_json_task >> sentiment_analysis_task >> push_to_mongo_task >> end_task
