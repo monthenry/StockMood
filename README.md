@@ -42,11 +42,17 @@ The first DAG is responsible for data collection.
 
 ```mermaid
 flowchart TD
+    raw1[(Raw Bloomberg articles archive)] --> |Extract Archive| text_articles[Text Articles]
+    text_articles --> |Parse to JSON| json_articles[CSV Articles]
+    json_articles --> land[(Landing Zone)]
+
+
     start((Start)) -->|Check Connection| conn[Check Internet Connection]
-    conn -->|Success| article[Parse Bloomberg Article Archive]
-    conn -->|Success| market[Query Yahoo Finance API]
-    article -->|Store| raw_data[(Raw Data Storage)]
-    market -->|Store| raw_data
+    conn -->|Success| api[(Yahoo finance API endpoint)]
+    api -->|Query Yahoo Finance API| enrich2[Query Yahoo Finance API]
+    conn -->|Failure| csv[(Yahoo finance local JSON)]
+    csv -->|Import JSON file| enrich2[JSON finance data]
+    enrich2 --> land
 ```
 
 ### Wrangling Phase
@@ -64,13 +70,19 @@ The second DAG cleanses and integrates the data.
 
 ```mermaid
 flowchart TD
-    raw[(Raw Data Storage)] --> clean1[Clean Article Text for Sentiment Analysis]
-    raw --> clean2[Clean Market Data]
-    clean1 --> enrich1[Perform Sentiment Analysis]
-    clean2 --> enrich2[Standardize and Align Data]
-    enrich1 --> join[Join Datasets by Date and Company]
-    enrich2 --> join
-    join --> stage[(Staging Zone)]
+    landing[(Landing Zone)] --> |Fetch CSV data| bloomberg_branch[Bloomberg Articles CSV]
+    landing --> |Fetch JSON data| yahoo_branch[Yahoo Finance Data JSON]
+
+    bloomberg_branch --> |Convert CSV to JSON| convert_json[Bloomberg Articles JSON]
+    convert_json --> |Clean and format| clean_bloomberg[Bloomberg Articles JSON Cleaned and Formated]
+    clean_bloomberg --> |Perform sentiment analysis| sentiment_analysis[Sentiment Analysis]
+    clean_bloomberg --> |Merge| merge_bloomberg[Bloomberg Articles + Sentiment Analysis JSON Cleaned and Formated]
+    sentiment_analysis --> |Merge| merge_bloomberg
+    merge_bloomberg --> staging[(Staging Zone)]
+
+    yahoo_branch --> |Clean and format| clean_yahoo[Yahoo Finance Data JSON Cleaned and Formated]
+    clean_yahoo --> |Augment JSON data| augment_yahoo[Yahoo Finance Data + Daily Change and Return JSON Cleaned and Formated]
+    augment_yahoo --> staging
 ```
 
 **Schema:**  
@@ -92,9 +104,15 @@ A Jupyter notebook or Streamlit dashboard is used to present:
 
 ```mermaid
 flowchart TD
-    stage[(Staging Zone)] --> postgres[Store in PostgreSQL Database]
-    postgres --> analyze[Run Analytics in Jupyter Notebook]
-    analyze --> visualize[Visualize Results in Notebook/Dashboard]
+    staging[(Staging Zone)] --> |Fetch Bloomberg JSON data| fetch_bloomberg[Bloomberg JSON Data]
+    fetch_bloomberg --> |Push to MongoDB| push_mongo[(MongoDB Bloomberg Database)]
+    push_mongo --> |Query companies' Bloomberg data| query_bloomberg[Bloomberg Production Data]
+    query_bloomberg --> |Refresh Jupyter Notebook and Display Analysis| display_analysis[Data Mart]
+
+    staging --> |Fetch Yahoo Finance JSON data| fetch_yahoo[Yahoo Finance JSON Data]
+    fetch_yahoo --> |Push to Redis| push_redis[(Redis Yahoo Finance Data Database)]
+    push_redis --> |Query companies' Yahoo Finance data| query_yahoo[Yahoo Finance Production Data]
+    query_yahoo --> |Refresh Jupyter Notebook and Display Analysis| display_analysis
 ```
 
 **Example Output:**  
