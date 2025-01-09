@@ -42,12 +42,13 @@ The first DAG is responsible for data collection.
 
 ```mermaid
 flowchart TD
-    raw1[(Raw Bloomberg articles archive)] --> |Extract Archive| text_articles[Text Articles]
+    start((Start)) --> raw1[(Raw Bloomberg articles archive)]
+    raw1 --> |Extract Archive| text_articles[Text Articles]
     text_articles --> |Parse to JSON| json_articles[CSV Articles]
     json_articles --> land[(Landing Zone)]
 
 
-    start((Start)) -->|Check Connection| conn[Check Internet Connection]
+    start -->|Check Connection| conn[Check Internet Connection]
     conn -->|Success| api[(Yahoo finance API endpoint)]
     api -->|Query Yahoo Finance API| enrich2[Query Yahoo Finance API]
     conn -->|Failure| csv[(Yahoo finance local JSON)]
