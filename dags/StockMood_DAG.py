@@ -13,6 +13,8 @@ from airflow import DAG
 from airflow.operators.python_operator import PythonOperator, BranchPythonOperator
 from airflow.operators.bash_operator import BashOperator
 from airflow.operators.dummy_operator import DummyOperator
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.sensors.external_task_sensor import ExternalTaskSensor
 import pandas as pd
 import json
 import os
@@ -464,79 +466,50 @@ def push_to_mongo(output_folder):
 # Création du DAG
 # Paramètres par défaut du DAG
 default_args_dict = {
-    'start_date': datetime.datetime(2020, 6, 25, 0, 0, 0),
+    'start_date': datetime.datetime(2020, 1, 10, 0, 0, 0),  # Set to a future date so that it doesn't start automatically on unpause
     'concurrency': 10,
     'schedule_interval': "0 0 * * *",
     'retries': 1,
     'retry_delay': datetime.timedelta(minutes=5),
 }
 
-dag = DAG(
-    dag_id='StockMood_DAG',
+### INGESTION PIPELINE ###
+ingestion_dag = DAG(
+    dag_id='StockMood_Ingestion',
     default_args=default_args_dict,
     catchup=False,
-    max_active_tasks=10
+    schedule_interval=None,  # Only manual runs
+    is_paused_upon_creation=False,  # DAG starts unpaused by default
+    max_active_tasks=1
 )
 
-# Tâches
 branch_task = BranchPythonOperator(
     task_id='branch_check_internet',
     python_callable=branch_check_internet,
     op_kwargs={'output_folder': '/opt/airflow/data'},
-    dag=dag
+    dag=ingestion_dag
 )
 
 api_fetch_task = PythonOperator(
     task_id='api_fetch_and_save_json',
     python_callable=api_fetch_and_save_json,
     op_kwargs={'output_folder': '/opt/airflow/data'},
-    dag=dag
+    dag=ingestion_dag
 )
 
 local_fetch_task = PythonOperator(
     task_id='local_fetch_and_save_json',
     python_callable=local_fetch_and_save_json,
     op_kwargs={'output_folder': '/opt/airflow/data'},
-    dag=dag
+    dag=ingestion_dag
 )
 
-clean_task = PythonOperator(
-    task_id='clean_json_data',
-    python_callable=clean_json_data,
-    op_kwargs={'output_folder': '/opt/airflow/data'},
-    dag=dag,
-    trigger_rule='none_failed_min_one_success'
+branch_merge_task = DummyOperator(
+    task_id='branch_merge',
+    dag=ingestion_dag,
+    trigger_rule='one_success'
 )
 
-rearrange_task = PythonOperator(
-    task_id='rearrange_json_data',
-    python_callable=rearrange_json_data,
-    op_kwargs={'output_folder': '/opt/airflow/data'},
-    dag=dag,
-    trigger_rule='none_failed_min_one_success'
-)
-
-push_to_redis_task = PythonOperator(
-    task_id='push_to_redis',
-    python_callable=push_to_redis,
-    op_kwargs={'output_folder': '/opt/airflow/data'},
-    dag=dag,
-    trigger_rule='none_failed_min_one_success'
-)
-
-# # Mettre à jour l'ordre des tâches
-# extract_archive_task = PythonOperator(
-#     task_id='extract_archive',
-#     python_callable=extract_archive,
-#     op_kwargs={
-#         'input_folder': "/opt/airflow/data/bloomberg_data_src",
-#         'output_folder': "/opt/airflow/data",
-#         'output_file': "20061020_20131126_bloomberg_news.tar.gz"
-#     },
-#     dag=dag
-# )
-
-# Task to extract and combine the tar.gz file from split parts
 extract_archive_task = BashOperator(
     task_id='extract_archive',
     bash_command="""
@@ -552,7 +525,7 @@ extract_archive_task = BashOperator(
             echo "Extraction complete."
         fi
     """,
-    dag=dag
+    dag=ingestion_dag
 )
 
 transform_to_csv_task = PythonOperator(
@@ -562,8 +535,28 @@ transform_to_csv_task = PythonOperator(
         'input_folder': "/opt/airflow/data/20061020_20131126_bloomberg_news",
         'output_csv': "/opt/airflow/data/bloomberg_articles_aggregated.csv"
     },
-    dag=dag,
+    dag=ingestion_dag,
     trigger_rule = 'all_success'
+)
+
+trigger_wrangling_dag = TriggerDagRunOperator(
+    task_id='trigger_wrangling_dag',
+    trigger_dag_id='StockMood_Wrangling',
+    dag=ingestion_dag,
+    trigger_rule='all_success'
+)
+
+branch_task >> [api_fetch_task, local_fetch_task] >> branch_merge_task >> trigger_wrangling_dag
+extract_archive_task >> transform_to_csv_task >> trigger_wrangling_dag
+
+### WRANGLING PIPELINE ###
+wrangling_dag = DAG(
+    dag_id='StockMood_Wrangling',
+    default_args=default_args_dict,
+    catchup=False,
+    schedule_interval=None,  # Only manual runs
+    is_paused_upon_creation=False,  # DAG starts unpaused by default
+    max_active_tasks=1
 )
 
 filter_and_convert_task = PythonOperator(
@@ -574,8 +567,8 @@ filter_and_convert_task = PythonOperator(
         'input_filename': 'bloomberg_articles_aggregated.csv',
         'output_filename': 'bloomberg_articles_filtered.json'
     },
-    dag=dag,
-    trigger_rule='none_failed_min_one_success'  # Exécuter cette tâche même si certaines échouent
+    dag=wrangling_dag,
+    trigger_rule='none_failed_min_one_success'
 )
 
 reformat_json_task = PythonOperator(
@@ -586,23 +579,59 @@ reformat_json_task = PythonOperator(
         'input_filename': 'bloomberg_articles_filtered.json',
         'output_filename': 'bloomberg_articles_filtered.json'
     },
-    dag=dag,
-    trigger_rule='none_failed_min_one_success'  # Exécuter cette tâche même si certaines échouent
+    dag=wrangling_dag,
+    trigger_rule='none_failed_min_one_success'
 )
 
 sentiment_analysis_task = PythonOperator(
     task_id='analyze_sentiment_relative_to_company',
     python_callable=analyze_sentiment_relative_to_company_in_dag,
     op_kwargs={
-        'output_folder': '/opt/airflow/data',  # Chemin du dossier où les fichiers JSON sont stockés
-        'input_filename': 'bloomberg_articles_filtered.json',  # Fichier JSON des articles à analyser
+        'output_folder': '/opt/airflow/data',
+        'input_filename': 'bloomberg_articles_filtered.json',
         'company_aliases': {
             "GOOGL": "Google",
             "AAPL": "Apple",
             "MSFT": "Microsoft"
         }
     },
-    dag=dag
+    dag=wrangling_dag
+)
+
+clean_task = PythonOperator(
+    task_id='clean_json_data',
+    python_callable=clean_json_data,
+    op_kwargs={'output_folder': '/opt/airflow/data'},
+    dag=wrangling_dag,
+    trigger_rule='none_failed_min_one_success'
+)
+
+rearrange_task = PythonOperator(
+    task_id='rearrange_json_data',
+    python_callable=rearrange_json_data,
+    op_kwargs={'output_folder': '/opt/airflow/data'},
+    dag=wrangling_dag,
+    trigger_rule='none_failed_min_one_success'
+)
+
+trigger_production_dag = TriggerDagRunOperator(
+    task_id='trigger_production_dag',
+    trigger_dag_id='StockMood_Production',
+    dag=wrangling_dag,
+    trigger_rule='all_success'
+)
+
+filter_and_convert_task >> reformat_json_task >> sentiment_analysis_task >> trigger_production_dag
+clean_task >> rearrange_task >> trigger_production_dag
+
+### PRODUCTION PIPELINE ###
+production_dag = DAG(
+    dag_id='StockMood_Production',
+    default_args=default_args_dict,
+    catchup=False,
+    schedule_interval=None,  # Only manual runs
+    is_paused_upon_creation=False,  # DAG starts unpaused by default
+    max_active_tasks=1
 )
 
 push_to_mongo_task = PythonOperator(
@@ -611,22 +640,16 @@ push_to_mongo_task = PythonOperator(
     op_kwargs={
         'output_folder': '/opt/airflow/data',
     },
-    dag=dag,
-    trigger_rule='none_failed_min_one_success'  # Exécuter même si une autre tâche échoue
-)
-
-end_task = DummyOperator(
-    task_id='end',
-    dag=dag,
+    dag=production_dag,
     trigger_rule='none_failed_min_one_success'
 )
 
-# Définition de l'ordre des tâches
-branch_task >> [api_fetch_task, local_fetch_task]
-api_fetch_task >> clean_task
-local_fetch_task >> clean_task
-clean_task >> rearrange_task
-rearrange_task >> push_to_redis_task
-push_to_redis_task >> end_task
+push_to_redis_task = PythonOperator(
+    task_id='push_to_redis',
+    python_callable=push_to_redis,
+    op_kwargs={'output_folder': '/opt/airflow/data'},
+    dag=production_dag,
+    trigger_rule='none_failed_min_one_success'
+)
 
-extract_archive_task >> transform_to_csv_task >> filter_and_convert_task >> reformat_json_task >> sentiment_analysis_task >> push_to_mongo_task >> end_task
+push_to_mongo_task >> push_to_redis_task
