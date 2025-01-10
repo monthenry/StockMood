@@ -126,7 +126,7 @@ flowchart TD
 * Install docker and docker-compose exactly as it is described in the website.
 * **do not do do apt install docker or docker-compose**
 
-## How to spin the webserver up
+## Setting up the webserver
 
 ### Prepping
 
@@ -156,24 +156,29 @@ Run the following command to creat the volumes needed in order to send data to a
 mkdir -p ./dags ./logs ./plugins
 ```
 
-And this **once**:
+And this **once** (if the exit code is 0 then it's all good):
 ```sh
 docker compose up airflow-init
 ```
-If the exit code is 0 then it's all good.
 
-### Running
+You can then run the whole docker:
 
 ```sh
 docker compose up
 ```
 
-After it is up, add a new connection:
+## Running the pipelines
 
-* Name - postgres_default
-* Conn type - postgres
-* Host - localhost
-* Port - 5432
-* Database - airflow
-* Username - airflow
-* Password - airflow
+To run the pipelines, access airflow at:
+```
+http://localhost:8080/
+```
+
+Then trigger a manual run for the StockMood_Ingestion dag.
+
+## Viewing
+
+Once the pipelines have been run, you can visualize data using Streamlit at:
+```
+http://localhost:8501/
+```

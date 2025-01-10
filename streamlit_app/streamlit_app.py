@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from pymongo import MongoClient
 import redis
 import json
@@ -28,7 +29,7 @@ try:
 except Exception as e:
     st.error(f"Failed to connect to Redis: {e}")
 
-# MongoDB Connection and Data Fetching
+# MongoDB Data Fetching
 def fetch_mongo_data(limit=30000):
     client = MongoClient(MONGO_URI)
     db = client[DB_NAME]
@@ -36,7 +37,7 @@ def fetch_mongo_data(limit=30000):
     data = list(collection.find({}, {"_id": 0}).limit(limit))  # Limit results
     return pd.DataFrame(data)  # Convert to DataFrame
 
-# Redis Connection and Data Fetching
+# Redis Data Fetching
 def fetch_redis_data():
     r = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
     keys = r.keys("finance_data:*")
@@ -50,82 +51,99 @@ def fetch_redis_data():
     return pd.DataFrame(data)  # Convert to DataFrame
 
 # Streamlit App
-st.title("Interactive Dashboard")
+st.title("Sentiment and Market Data Dashboard")
 
-# MongoDB Data - Sentiment Articles
-st.header("Sentiment Over Time (MongoDB)")
+# Fetch and Process MongoDB Data
 mongo_data = fetch_mongo_data()
-if not mongo_data.empty:  # Ensure DataFrame is not empty
-    # Ensure required columns exist
-    if {"date", "relative_sentiment", "symbol"}.issubset(mongo_data.columns):  # Ensure `symbol` exists
-        # Convert `date` to datetime
-        mongo_data["date"] = pd.to_datetime(mongo_data["date"])
-
-        # Group by symbol and date, then compute the average sentiment
-        grouped_mongo = (
-            mongo_data.groupby([mongo_data["date"].dt.date, "symbol"])
-            .agg({"relative_sentiment": "mean"})
-            .rename(columns={"relative_sentiment": "avg_sentiment"})
-            .reset_index()  # Reset index to make 'date' and 'symbol' columns
-        )
-
-        # Time Frame Selector
-        min_date, max_date = grouped_mongo["date"].min(), grouped_mongo["date"].max()
-        start_date, end_date = st.slider(
-            "Select Date Range for Sentiment Data:",
-            min_value=min_date,  # Already in date format
-            max_value=max_date,  # Already in date format
-            value=(min_date, max_date),  # Default slider range
-        )
-
-        # Filter grouped data by the selected time frame
-        filtered_mongo = grouped_mongo[(grouped_mongo["date"] >= start_date) & (grouped_mongo["date"] <= end_date)]
-
-        # Plot using Plotly
-        fig_sentiment = px.line(
-            filtered_mongo,
-            x="date",
-            y="avg_sentiment",  # Use the average sentiment
-            color="symbol",     # Group by symbol
-            title="Average Sentiment Over Time by Company",
-            labels={"date": "Date", "avg_sentiment": "Average Sentiment", "symbol": "Company"},
-        )
-        st.plotly_chart(fig_sentiment)
-    else:
-        st.write("Sentiment data does not have required fields (`date`, `relative_sentiment`, and `symbol`).")
+if not mongo_data.empty and {"date", "relative_sentiment", "symbol"}.issubset(mongo_data.columns):
+    mongo_data["date"] = pd.to_datetime(mongo_data["date"])
+    grouped_mongo = (
+        mongo_data.groupby([mongo_data["date"].dt.date, "symbol"])
+        .agg({"relative_sentiment": "mean"})
+        .rename(columns={"relative_sentiment": "avg_sentiment"})
+        .reset_index()
+    )
 else:
-    st.write("No sentiment data found in MongoDB.")
+    grouped_mongo = pd.DataFrame()
 
-# Redis Data - Financial Data
-st.header("Financial Data (Redis)")
+# Fetch and Process Redis Data
 redis_data = fetch_redis_data()
-if not redis_data.empty:  # Ensure DataFrame is not empty
-    # Convert `date` to datetime64 without time zone information
-    redis_data["date"] = pd.to_datetime(redis_data["date"]).dt.date  # Convert to `datetime.date`
-    redis_data = redis_data.sort_values(by="date")  # Sort by date
+if not redis_data.empty and {"date", "close", "symbol"}.issubset(redis_data.columns):
+    redis_data["date"] = pd.to_datetime(redis_data["date"]).dt.date
+else:
+    redis_data = pd.DataFrame()
+
+# Merge Sentiment and Market Data
+if not grouped_mongo.empty and not redis_data.empty:
+    combined_data = pd.merge(
+        grouped_mongo,
+        redis_data,
+        on=["date", "symbol"],
+        how="inner"  # Keep only matching rows
+    )
+else:
+    combined_data = pd.DataFrame()
+
+if not combined_data.empty:
+    # Dropdown for selecting company
+    companies = combined_data["symbol"].unique()
+    selected_company = st.selectbox("Select a Company:", options=companies)
+
+    # Filter by selected company
+    filtered_data = combined_data[combined_data["symbol"] == selected_company]
 
     # Time Frame Selector
-    min_date, max_date = redis_data["date"].min(), redis_data["date"].max()
+    min_date, max_date = filtered_data["date"].min(), filtered_data["date"].max()
     start_date, end_date = st.slider(
-        "Select Date Range for Financial Data:",
-        min_value=min_date,  # Already datetime.date
-        max_value=max_date,  # Already datetime.date
+        "Select Date Range:",
+        min_value=min_date,
+        max_value=max_date,
         value=(min_date, max_date),
-        key="financial_slider",
     )
 
-    # Filter data by selected time frame
-    filtered_redis = redis_data[(redis_data["date"] >= start_date) & (redis_data["date"] <= end_date)]
+    # Filter by timeframe
+    filtered_data = filtered_data[
+        (filtered_data["date"] >= start_date) & (filtered_data["date"] <= end_date)
+    ]
 
-    # Plot using Plotly
-    fig_financial = px.line(
-        filtered_redis,
-        x="date",
-        y="close",
-        color="symbol",
-        title="Financial Data Over Time",
-        labels={"date": "Date", "close": "Close Price", "symbol": "Company"},
+    # Create dual-axis plot
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    # Add sentiment data (primary y-axis)
+    fig.add_trace(
+        go.Scatter(
+            x=filtered_data["date"],
+            y=filtered_data["avg_sentiment"],
+            name="Average Sentiment",
+            line=dict(color="blue"),
+        ),
+        secondary_y=False,
     )
-    st.plotly_chart(fig_financial)
+
+    # Add market data (secondary y-axis)
+    fig.add_trace(
+        go.Scatter(
+            x=filtered_data["date"],
+            y=filtered_data["close"],
+            name="Close Price",
+            line=dict(color="green"),
+        ),
+        secondary_y=True,
+    )
+
+    # Update layout
+    fig.update_layout(
+        title=f"Sentiment and Market Data for {selected_company}",
+        xaxis_title="Date",
+        yaxis_title="Average Sentiment",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+
+    # Update secondary y-axis
+    fig.update_yaxes(title_text="Average Sentiment", secondary_y=False)
+    fig.update_yaxes(title_text="Close Price", secondary_y=True)
+
+    # Display the plot
+    st.plotly_chart(fig)
 else:
-    st.write("No financial data found in Redis.")
+    st.write("No combined data available to display.")
