@@ -158,6 +158,18 @@ services:
       airflow-init:
         condition: service_completed_successfully
 
+  streamlit:
+    image: 3x3cut0r/streamlit:latest
+    environment:
+        TZ: Europe/Berlin
+    volumes:
+      - ./streamlit_app:/app
+    ports:
+      - 8501:8501/tcp
+    command: >
+      /bin/bash -c "pip install -r /app/requirements.txt &&
+                    streamlit run /app/streamlit_app.py"
+
   airflow-scheduler:
     <<: *airflow-common
     command: scheduler

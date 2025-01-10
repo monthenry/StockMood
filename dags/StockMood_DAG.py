@@ -21,6 +21,8 @@ import os
 import tarfile
 import nltk
 from nltk.sentiment import SentimentIntensityAnalyzer
+from multiprocessing import Pool
+from concurrent.futures import ThreadPoolExecutor
 
 # Fonction pour vérifier la connexion Internet
 def check_internet_connection():
@@ -72,9 +74,7 @@ def local_fetch_and_save_json(output_folder):
     else:
         print(f"Fichier source {src_file_path} introuvable.")
 
-# Fonction pour nettoyer les données JSON
 def clean_json_data(output_folder):
-    from datetime import datetime  # Option 1: Importer directement ici si nécessaire
     file_path = os.path.join(output_folder, 'yahoo_finance_data.json')
 
     if os.path.exists(file_path):
@@ -86,23 +86,29 @@ def clean_json_data(output_folder):
                 timestamps = symbol_data['timestamp']
                 closes = symbol_data['close']
 
-                # Convertir les timestamps en années et filtrer entre 2007 et 2013
-                filtered_data = [
-                    (timestamp, close)
-                    for timestamp, close in zip(timestamps, closes)
-                    if 2007 <= datetime.utcfromtimestamp(timestamp).year <= 2013
-                ]
+                # Create a DataFrame for more efficient processing
+                df = pd.DataFrame({
+                    'timestamp': timestamps,
+                    'close': closes
+                })
 
-                # Réattribuer les données filtrées
-                symbol_data['timestamp'] = [item[0] for item in filtered_data]
-                symbol_data['close'] = [item[1] for item in filtered_data]
+                # Convert timestamp to datetime and filter between 2007 and 2013
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+                df = df[(df['timestamp'].dt.year >= 2007) & (df['timestamp'].dt.year <= 2013)]
 
-        # Écrire les données nettoyées dans le fichier
-        file_path = os.path.join(output_folder, 'yahoo_finance_data_cleaned.json')
-        with open(file_path, 'w') as fichier_json:
+                # Sort the DataFrame by timestamp (ascending order)
+                df = df.sort_values(by='timestamp', ascending=True)
+
+                # Update symbol data with filtered and sorted values
+                symbol_data['timestamp'] = (df['timestamp'].astype(int) // 10**9).tolist()  # Convert to int and then to list
+                symbol_data['close'] = df['close'].tolist()
+
+        # Write cleaned and sorted data to a new JSON file
+        cleaned_file_path = os.path.join(output_folder, 'yahoo_finance_data_cleaned.json')
+        with open(cleaned_file_path, 'w') as fichier_json:
             json.dump(data, fichier_json, indent=4)
 
-        print("Les données nettoyées ont été enregistrées dans 'yahoo_finance_data_cleaned.json'.")
+        print("Les données nettoyées et triées ont été enregistrées dans 'yahoo_finance_data_cleaned.json'.")
     else:
         print("Fichier JSON introuvable. Rien à nettoyer.")
 
@@ -206,17 +212,42 @@ def extract_archive(input_folder, output_folder, output_file):
 
     print("Extraction complete.")
 
+def process_article(article_path):
+    """
+    Reads a single article and returns a dictionary of its data if it's valid.
+    """
+    with open(article_path, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+        # Ensure the article has the expected structure
+        if len(lines) >= 4:
+            title = lines[0].strip("-- ").strip()
+            author = lines[1].strip("-- ").strip()
+            date = lines[2].strip("-- ").strip()
+            link = lines[3].strip("-- ").strip()
+            content = "".join(lines[4:]).strip()
+
+            return {
+                "title": title,
+                "author": author,
+                "date": date,
+                "link": link,
+                "content": content
+            }
+        else:
+            return None
+
 # Converts extracted article files to a CSV format.
 def transform_to_csv(input_folder, output_csv):
-    # # Check if the output CSV file already exists
-    # if os.path.exists(output_csv):
-    #     print(f"{output_csv} already exists. Skipping transformation.")
-    #     return
+    # Check if the output CSV file already exists
+    if os.path.exists(output_csv):
+        print(f"{output_csv} already exists. Skipping transformation.")
+        return
 
     # Initialize a list to store article data
     articles = []
 
-    # Iterate over all date folders
+    # Collect all article files first
+    article_paths = []
     for date_folder in os.listdir(input_folder):
         date_path = os.path.join(input_folder, date_folder)
         if os.path.isdir(date_path):
@@ -224,31 +255,57 @@ def transform_to_csv(input_folder, output_csv):
             for article_file in os.listdir(date_path):
                 article_path = os.path.join(date_path, article_file)
                 if os.path.isfile(article_path):
-                    with open(article_path, "r", encoding="utf-8") as f:
-                        lines = f.readlines()
-                        # Ensure the article has the expected structure
-                        if len(lines) >= 4:
-                            title = lines[0].strip("-- ").strip()
-                            author = lines[1].strip("-- ").strip()
-                            date = lines[2].strip("-- ").strip()
-                            link = lines[3].strip("-- ").strip()
-                            content = "".join(lines[4:]).strip()
+                    article_paths.append(article_path)
 
-                            # Append the article's data to the list
-                            articles.append({
-                                "title": title,
-                                "author": author,
-                                "date": date,
-                                "link": link,
-                                "content": content
-                            })
+    # Parallelize the file reading using ThreadPoolExecutor
+    with ThreadPoolExecutor() as executor:
+        results = executor.map(process_article, article_paths)
 
-    # Create a pandas DataFrame from the articles list
-    df = pd.DataFrame(articles)
+    # Filter out None values (invalid articles)
+    articles = [article for article in results if article is not None]
 
-    # Save the DataFrame to a CSV file for future use
-    df.to_csv(output_csv, index=False, encoding="utf-8")
-    print("CSV generation complete.")
+    if articles:
+        # Create a pandas DataFrame from the articles list
+        df = pd.DataFrame(articles)
+
+        # Save the DataFrame to a CSV file for future use
+        df.to_csv(output_csv, index=False, encoding="utf-8")
+        print("CSV generation complete.")
+    else:
+        print("No valid articles found.")
+
+def clean_csv_data(output_folder, input_filename, output_filename):
+    input_filepath = os.path.join(output_folder, input_filename)
+    output_filepath = os.path.join(output_folder, output_filename)
+
+    # Vérifier si le fichier existe
+    if not os.path.exists(input_filepath):
+        print(f"Fichier {input_filepath} introuvable.")
+        return
+
+    # Charger le fichier CSV avec pandas
+    try:
+        df = pd.read_csv(input_filepath)
+    except Exception as e:
+        print(f"Erreur lors de la lecture du fichier : {e}")
+        return
+
+    # Nettoyer les données
+    df = df.dropna(subset=['title', 'author', 'date', 'link', 'content'])
+
+    # Supprimer les lignes où la date n'est pas une date valide
+    df['date'] = pd.to_datetime(df['date'], errors='coerce')
+    df = df.dropna(subset=['date'])
+
+    # Trier les données par date
+    df = df.sort_values(by='date')
+
+    # Sauvegarder le DataFrame nettoyé dans un nouveau fichier CSV
+    try:
+        df.to_csv(output_filepath, index=False)
+        print(f"Les données nettoyées ont été enregistrées dans {output_filepath}.")
+    except Exception as e:
+        print(f"Erreur lors de l'écriture du fichier CSV : {e}")
 
 def filter_and_convert_to_json(output_folder, input_filename, output_filename):
     input_filepath = os.path.join(output_folder, input_filename)
@@ -259,53 +316,40 @@ def filter_and_convert_to_json(output_folder, input_filename, output_filename):
         print(f"Fichier {input_filepath} introuvable.")
         return
 
-    # Charger le fichier CSV avec pandas
-    df = pd.read_csv(input_filepath, usecols=['title', 'author', 'date', 'link', 'content'])
+    # Charger le fichier CSV avec pandas (charger uniquement les colonnes nécessaires)
+    try:
+        df = pd.read_csv(input_filepath, usecols=['title', 'author', 'date', 'link', 'content'])
+    except Exception as e:
+        print(f"Erreur lors de la lecture du fichier : {e}")
+        return
 
-    # Créer un dictionnaire pour stocker les articles filtrés par entreprise
-    articles_by_company = {
-        "GOOGL": [],
-        "MSFT": [],
-        "AAPL": []
+    # Remplacer les valeurs NaN dans 'content' par des chaînes vides
+    df['content'] = df['content'].fillna('')
+
+    # Initialiser le dictionnaire des articles filtrés
+    articles_by_company = {"GOOGL": [], "MSFT": [], "AAPL": []}
+
+    # Filtrer les articles en utilisant des masques booléens
+    keywords = {
+        "GOOGL": "Google",
+        "MSFT": "Microsoft",
+        "AAPL": "Apple"
     }
 
-    # Itérer sur chaque ligne du DataFrame et vérifier le contenu
-    for _, row in df.iterrows():
-        content = row['content']
-        
-        # Vérifier que 'content' est une chaîne de caractères (pas NaN, None, ou float)
-        if isinstance(content, str):
-            # Recherche des mots-clés dans 'content'
-            if 'Google' in content:
-                articles_by_company['GOOGL'].append({
-                    "title": row['title'],
-                    "author": row['author'],
-                    "date": row['date'],
-                    "link": row['link'],
-                    "content": row['content']
-                })
-            elif 'Microsoft' in content:
-                articles_by_company['MSFT'].append({
-                    "title": row['title'],
-                    "author": row['author'],
-                    "date": row['date'],
-                    "link": row['link'],
-                    "content": row['content']
-                })
-            elif 'Apple' in content:
-                articles_by_company['AAPL'].append({
-                    "title": row['title'],
-                    "author": row['author'],
-                    "date": row['date'],
-                    "link": row['link'],
-                    "content": row['content']
-                })
+    for company, keyword in keywords.items():
+        mask = df['content'].str.contains(keyword, case=False, na=False)
+        filtered_df = df[mask]
+
+        # Convertir en liste de dictionnaires
+        articles_by_company[company] = filtered_df.to_dict(orient='records')
 
     # Sauvegarder le dictionnaire en format JSON
-    with open(output_filepath, 'w', encoding='utf-8') as json_file:
-        json.dump(articles_by_company, json_file, ensure_ascii=False, indent=4)
-
-    print(f"Les données filtrées ont été enregistrées dans {output_filepath}.")
+    try:
+        with open(output_filepath, 'w', encoding='utf-8') as json_file:
+            json.dump(articles_by_company, json_file, ensure_ascii=False, indent=4)
+        print(f"Les données filtrées ont été enregistrées dans {output_filepath}.")
+    except Exception as e:
+        print(f"Erreur lors de l'écriture du fichier JSON : {e}")
 
 def reformat_json(output_folder, input_filename, output_filename):
     input_filepath = os.path.join(output_folder, input_filename)
@@ -433,9 +477,6 @@ def analyze_sentiment_relative_to_company_in_dag(output_folder, input_filename, 
     
     print(f"Les données enrichies avec les sentiments ont été enregistrées dans {input_filepath}.")
 
-
-
-
 def push_to_mongo(output_folder):
     # Chemin du fichier JSON enrichi
     enriched_file_path = os.path.join(output_folder, 'bloomberg_articles_filtered.json')
@@ -480,7 +521,7 @@ ingestion_dag = DAG(
     catchup=False,
     schedule_interval=None,  # Only manual runs
     is_paused_upon_creation=False,  # DAG starts unpaused by default
-    max_active_tasks=1
+    max_active_tasks=10
 )
 
 branch_task = BranchPythonOperator(
@@ -556,7 +597,18 @@ wrangling_dag = DAG(
     catchup=False,
     schedule_interval=None,  # Only manual runs
     is_paused_upon_creation=False,  # DAG starts unpaused by default
-    max_active_tasks=1
+    max_active_tasks=10
+)
+
+clean_csv_task = PythonOperator(
+    task_id='clean_csv_data',
+    python_callable=clean_csv_data,
+    op_kwargs={
+        'output_folder': '/opt/airflow/data',
+        'input_filename': 'bloomberg_articles_aggregated.csv',
+        'output_filename': 'bloomberg_articles_aggregated.csv'
+    },
+    dag=wrangling_dag
 )
 
 filter_and_convert_task = PythonOperator(
@@ -621,7 +673,7 @@ trigger_production_dag = TriggerDagRunOperator(
     trigger_rule='all_success'
 )
 
-filter_and_convert_task >> reformat_json_task >> sentiment_analysis_task >> trigger_production_dag
+clean_csv_task >> filter_and_convert_task >> reformat_json_task >> sentiment_analysis_task >> trigger_production_dag
 clean_task >> rearrange_task >> trigger_production_dag
 
 ### PRODUCTION PIPELINE ###
@@ -631,7 +683,7 @@ production_dag = DAG(
     catchup=False,
     schedule_interval=None,  # Only manual runs
     is_paused_upon_creation=False,  # DAG starts unpaused by default
-    max_active_tasks=1
+    max_active_tasks=10
 )
 
 push_to_mongo_task = PythonOperator(

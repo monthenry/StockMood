@@ -1,0 +1,9 @@
+streamlit==1.26.0       # Streamlit version
+pymongo==4.6.0          # MongoDB client
+redis==5.0.0            # Redis client
+pandas==2.1.2           # Data manipulation
+numpy==1.26.0           # Numerical computations
+matplotlib==3.8.0       # Plotting
+scipy==1.11.2           # Scientific computing
+requests==2.31.0        # HTTP requests
+plotly==5.15.0          # Interactive plotting
