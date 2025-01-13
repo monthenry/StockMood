@@ -182,3 +182,9 @@ Once the pipelines have been run, you can visualize data using Streamlit at:
 ```
 http://localhost:8501/
 ```
+You also have acces at the database visualization:
+```
+http://localhost:8081/ for mongoDB
+http://localhost:5540/ for redis
+
+```
