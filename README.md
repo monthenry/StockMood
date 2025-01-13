@@ -61,7 +61,7 @@ flowchart TD
 
 ### Wrangling Phase
 
-The second DAG cleanses and integrates the data.  
+The second DAG cleanses, integrates and augment the data (droping columns, handling null values, handling incorrect dates, computing sentiment scores and stock prices shift, ...).  
 
 - **Bloomberg Articles:**  
   Sentiment analysis is performed using NLP tools like `TextBlob` or `VADER`. The results are enriched with metadata (e.g., company mentions).  
@@ -94,14 +94,14 @@ flowchart TD
 
 ### Production Phase
 
-The final DAG transforms the integrated data into actionable insights.  
+The final DAG transforms the staged data into production ready data by filtering out useless columns and merging data together.  
 
-- Sentiment scores and stock data are analyzed for correlations.  
+- Sentiment scores and stock data are ploted to look for correlations.  
 - Significant global events are identified and visualized using temporal overlays.  
 
-A Jupyter notebook or Streamlit dashboard is used to present:  
-- Correlation heatmaps.  
-- Timeline visualizations of sentiment and stock performance.  
+A Streamlit dashboard is used to present:  
+- Correlation plots.  
+- Stock price behaviours on specific events.  
 
 ```mermaid
 flowchart TD
