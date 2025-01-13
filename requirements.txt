@@ -1,0 +1,6 @@
+pandas
+nltk
+influxdb-client
+redis
+pymongo
+requests

@@ -1,43 +1,29 @@
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+import psycopg2
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 from pymongo import MongoClient
 import redis
 import json
+import plotly.graph_objects as go
 
-# MongoDB Configuration
+# Configuration
 MONGO_URI = "mongodb://root:example@mongo:27017/"
 DB_NAME = "bloomberg_db"
 COLLECTION_NAME = "sentiment_articles"
-
-# Redis Configuration
 REDIS_HOST = 'redis'
 REDIS_PORT = 6379
+POSTGRES_URI = 'postgresql://airflow:airflow@postgres:5432/airflow'
 
-# Test MongoDB Connection
-try:
-    client = MongoClient(MONGO_URI)
-    db = client[DB_NAME]
-except Exception as e:
-    st.error(f"Failed to connect to MongoDB: {e}")
-
-# Test Redis Connection
-try:
-    r = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
-    r.ping()
-except Exception as e:
-    st.error(f"Failed to connect to Redis: {e}")
-
-# MongoDB Data Fetching
+# Data Fetching Functions
 def fetch_mongo_data(limit=30000):
     client = MongoClient(MONGO_URI)
     db = client[DB_NAME]
     collection = db[COLLECTION_NAME]
-    data = list(collection.find({}, {"_id": 0}).limit(limit))  # Limit results
-    return pd.DataFrame(data)  # Convert to DataFrame
+    data = list(collection.find({}, {"_id": 0}).limit(limit))
+    return pd.DataFrame(data)
 
-# Redis Data Fetching
 def fetch_redis_data():
     r = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
     keys = r.keys("finance_data:*")
@@ -48,102 +34,101 @@ def fetch_redis_data():
             parsed_values = json.loads(values)
             parsed_values.update({"symbol": key.replace("finance_data:", ""), "date": date})
             data.append(parsed_values)
-    return pd.DataFrame(data)  # Convert to DataFrame
+    return pd.DataFrame(data)
 
-# Streamlit App
-st.title("Sentiment and Market Data Dashboard")
+def fetch_postgres_data(symbol):
+    conn = psycopg2.connect(POSTGRES_URI)
+    query = """
+    SELECT date, avg_sentiment, close
+    FROM financial_sentiment
+    WHERE symbol = %s
+    ORDER BY date
+    """
+    df = pd.read_sql(query, conn, params=(symbol,))
+    conn.close()
+    return df
 
-# Fetch and Process MongoDB Data
-mongo_data = fetch_mongo_data()
-if not mongo_data.empty and {"date", "relative_sentiment", "symbol"}.issubset(mongo_data.columns):
-    mongo_data["date"] = pd.to_datetime(mongo_data["date"])
-    grouped_mongo = (
-        mongo_data.groupby([mongo_data["date"].dt.date, "symbol"])
-        .agg({"relative_sentiment": "mean"})
-        .rename(columns={"relative_sentiment": "avg_sentiment"})
-        .reset_index()
+# Plotting Functions
+def plot_stock_and_sentiment(df_filtered):
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+    ax1.set_xlabel('Date')
+    ax1.set_ylabel('Average Sentiment', color='tab:blue')
+    ax1.plot(df_filtered['date'], df_filtered['avg_sentiment'], color='tab:blue', label='Average Sentiment')
+    ax1.tick_params(axis='y', labelcolor='tab:blue')
+
+    ax2 = ax1.twinx()
+    ax2.set_ylabel('Stock Price (Close)', color='tab:green')
+    ax2.plot(df_filtered['date'], df_filtered['close'], color='tab:green', linestyle='--', label='Stock Price')
+    ax2.tick_params(axis='y', labelcolor='tab:green')
+
+    ax1.xaxis.set_major_locator(mdates.MonthLocator())
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+    plt.xticks(rotation=45)
+    fig.tight_layout()
+    st.pyplot(fig)
+
+def plot_interactive_stock_evolution(filtered_data, articles):
+    fig = go.Figure()
+    for _, row in articles.iterrows():
+        current_date = pd.to_datetime(row['date']).date()
+        article_title = row['title']
+        future_stocks = filtered_data[
+            (filtered_data['date'] >= current_date) &
+            (filtered_data['date'] <= current_date + pd.Timedelta(days=30))
+        ]
+        if not future_stocks.empty:
+            future_stocks['days_since_article'] = (
+                pd.to_datetime(future_stocks['date']) - pd.to_datetime(current_date)
+            ).dt.days
+            fig.add_trace(go.Scatter(
+                x=future_stocks['days_since_article'],
+                y=future_stocks['close'],
+                mode='lines',
+                name=f"Article: {article_title[:20]}...",
+                text=[f"Title: {article_title}<br>Date: {current_date}<br>Close: {close}" for close in future_stocks['close']],
+                line=dict(width=2, color='rgba(0, 100, 250, 0.5)')
+            ))
+    fig.update_layout(
+        title="Interactive Stock Evolution After Positive Sentiment Articles",
+        xaxis_title="Days After Article",
+        yaxis_title="Close Price",
+        template="plotly_white"
     )
+    st.plotly_chart(fig, use_container_width=True)
+
+# Streamlit UI
+st.title('Financial Sentiment and Stock Price')
+symbols = ['AAPL', 'GOOGL', 'MSFT']
+symbol = st.selectbox('Select Company (Symbol)', symbols)
+
+df = fetch_postgres_data(symbol)
+df['date'] = pd.to_datetime(df['date']).dt.date
+
+min_date, max_date = df['date'].min(), df['date'].max()
+start_date, end_date = st.slider('Select Date Range', min_date, max_date, (min_date, max_date), format="YYYY-MM-DD")
+
+df_filtered = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
+st.subheader("Stock and Sentiment Correlation Over Time")
+plot_stock_and_sentiment(df_filtered)
+
+st.subheader("Stock Evolution After Positive Sentiment Articles")
+min_sentiment = st.slider("Select Minimum Sentiment Threshold:", 0.65, 0.9, 0.75, 0.01)
+mongo_data = fetch_mongo_data()
+mongo_data["date"] = pd.to_datetime(mongo_data["date"])
+
+if {"date", "relative_sentiment", "symbol"}.issubset(mongo_data.columns):
+    grouped_mongo = mongo_data.groupby([mongo_data["date"].dt.date, "symbol"]).agg({"relative_sentiment": "mean"}).reset_index()
 else:
     grouped_mongo = pd.DataFrame()
 
-# Fetch and Process Redis Data
 redis_data = fetch_redis_data()
-if not redis_data.empty and {"date", "close", "symbol"}.issubset(redis_data.columns):
+if {"date", "close", "symbol"}.issubset(redis_data.columns):
     redis_data["date"] = pd.to_datetime(redis_data["date"]).dt.date
 else:
     redis_data = pd.DataFrame()
 
-# Merge Sentiment and Market Data
-if not grouped_mongo.empty and not redis_data.empty:
-    combined_data = pd.merge(
-        grouped_mongo,
-        redis_data,
-        on=["date", "symbol"],
-        how="inner"  # Keep only matching rows
-    )
-else:
-    combined_data = pd.DataFrame()
+combined_data = pd.merge(grouped_mongo, redis_data, on=["date", "symbol"], how="inner") if not grouped_mongo.empty and not redis_data.empty else pd.DataFrame()
+filtered_data = combined_data[combined_data["symbol"] == symbol]
+best_sentiment_articles = mongo_data[mongo_data["relative_sentiment"] >= min_sentiment]
 
-if not combined_data.empty:
-    # Dropdown for selecting company
-    companies = combined_data["symbol"].unique()
-    selected_company = st.selectbox("Select a Company:", options=companies)
-
-    # Filter by selected company
-    filtered_data = combined_data[combined_data["symbol"] == selected_company]
-
-    # Time Frame Selector
-    min_date, max_date = filtered_data["date"].min(), filtered_data["date"].max()
-    start_date, end_date = st.slider(
-        "Select Date Range:",
-        min_value=min_date,
-        max_value=max_date,
-        value=(min_date, max_date),
-    )
-
-    # Filter by timeframe
-    filtered_data = filtered_data[
-        (filtered_data["date"] >= start_date) & (filtered_data["date"] <= end_date)
-    ]
-
-    # Create dual-axis plot
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
-
-    # Add sentiment data (primary y-axis)
-    fig.add_trace(
-        go.Scatter(
-            x=filtered_data["date"],
-            y=filtered_data["avg_sentiment"],
-            name="Average Sentiment",
-            line=dict(color="blue"),
-        ),
-        secondary_y=False,
-    )
-
-    # Add market data (secondary y-axis)
-    fig.add_trace(
-        go.Scatter(
-            x=filtered_data["date"],
-            y=filtered_data["close"],
-            name="Close Price",
-            line=dict(color="green"),
-        ),
-        secondary_y=True,
-    )
-
-    # Update layout
-    fig.update_layout(
-        title=f"Sentiment and Market Data for {selected_company}",
-        xaxis_title="Date",
-        yaxis_title="Average Sentiment",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
-
-    # Update secondary y-axis
-    fig.update_yaxes(title_text="Average Sentiment", secondary_y=False)
-    fig.update_yaxes(title_text="Close Price", secondary_y=True)
-
-    # Display the plot
-    st.plotly_chart(fig)
-else:
-    st.write("No combined data available to display.")
+plot_interactive_stock_evolution(filtered_data, best_sentiment_articles)

@@ -56,6 +56,9 @@ flowchart TD
     enrich2 --> land
 ```
 
+**Ingestion DAG:**  
+![Ingestion DAG](./images/dag_ingestion.png)  
+
 ### Wrangling Phase
 
 The second DAG cleanses and integrates the data.  
@@ -79,18 +82,15 @@ flowchart TD
     clean_bloomberg --> |Perform sentiment analysis| sentiment_analysis[Sentiment Analysis]
     clean_bloomberg --> |Merge| merge_bloomberg[Bloomberg Articles + Sentiment Analysis JSON Cleaned and Formated]
     sentiment_analysis --> |Merge| merge_bloomberg
-    merge_bloomberg --> staging[(Staging Zone)]
+    merge_bloomberg --> |Push to MongoDB| staging[(Staging Zone)]
 
     yahoo_branch --> |Clean and format| clean_yahoo[Yahoo Finance Data JSON Cleaned and Formated]
     clean_yahoo --> |Augment JSON data| augment_yahoo[Yahoo Finance Data + Daily Change and Return JSON Cleaned and Formated]
-    augment_yahoo --> staging
+    augment_yahoo --> |Push to Redis| staging
 ```
 
-**Schema:**  
-![Postgres Schema](./images/postgres_schema.png)  
-
-**Sample Data:**  
-![Postgres Data](./images/postgres_data.png)  
+**Wrangling DAG:**  
+![Wrangling DAG](./images/dag_wrangling.png)  
 
 ### Production Phase
 
@@ -106,20 +106,35 @@ A Jupyter notebook or Streamlit dashboard is used to present:
 ```mermaid
 flowchart TD
     staging[(Staging Zone)] --> |Fetch Bloomberg JSON data| fetch_bloomberg[Bloomberg JSON Data]
-    fetch_bloomberg --> |Push to MongoDB| push_mongo[(MongoDB Bloomberg Database)]
-    push_mongo --> |Query companies' Bloomberg data| query_bloomberg[Bloomberg Production Data]
-    query_bloomberg --> |Refresh Jupyter Notebook and Display Analysis| display_analysis[Data Mart]
+    fetch_bloomberg --> |Filter out useless data| filter_bloomberg[Filtered Bloomberg Data]
+    filter_bloomberg --> |Merge| merged_data[Merged Bloomberg Sentiment Data + Stock Prices Data over time]
 
     staging --> |Fetch Yahoo Finance JSON data| fetch_yahoo[Yahoo Finance JSON Data]
-    fetch_yahoo --> |Push to Redis| push_redis[(Redis Yahoo Finance Data Database)]
-    push_redis --> |Query companies' Yahoo Finance data| query_yahoo[Yahoo Finance Production Data]
-    query_yahoo --> |Refresh Jupyter Notebook and Display Analysis| display_analysis
+    fetch_yahoo --> |Filter out useless data| filter_yahoo[Filtered Yahoo Finance Data]
+    filter_yahoo --> |Merge| merged_data
+
+    merged_data --> |Push to PostgreSQL| postgres[(PosteSQL Production Database)]
 ```
 
-**Example Output:**  
-![Graph Example](./images/graph_example.png)  
+**Production DAG:**  
+![Production DAG](./images/dag_production.png)  
 
 ## Queries 
+Once the data is stored in postgres and production ready, we access it using Streamlit for our datamart, the main query is as follow:
+```SQL
+SELECT date, avg_sentiment, close
+FROM financial_sentiment
+WHERE symbol = %s
+ORDER BY date
+```
+
+## Results
+1. Scattered correlation: Correlations can be observed between bloomberg articles sentiment score and stock prices on specific time intervals. However this does not seem to be a reliable way to predict stock prices.  
+![Correlation](./images/correlation_stock_sentiment.png) 
+
+2. Strongly negative or positive sentiment: However we noticed that articles presenting extremely positive or negative sentiments often have preceded significant growth or losses in stock prices.  
+![Extreme sentiments](./images/extreme_sentiment.png) 
+
 
 ## Requirements
 * To have docker *and* docker-compose installed.
@@ -137,7 +152,7 @@ id -u
 
 Now edit the **.env** file and swap out 501 for your own.
 
-Run the following commands to clean up docker containers, images and volumes (use it with or without sudo depending on docker install):
+Please clean up previous instances of docker containers, images and volumes for this project (the following commands remove everything, use with caution):
 ```sh
 sudo docker stop $(sudo docker ps -aq)
 sudo docker rm $(sudo docker ps -aq)
@@ -151,18 +166,12 @@ Run the following command to delete files from previous executions (while in the
 sudo rm -rf config logs plugins data/*.csv data/*.json data/*.tar.gz data/20061020_20131126_bloomberg_news
 ```
 
-Run the following command to creat the volumes needed in order to send data to airflow:
-```sh
-mkdir -p ./dags ./logs ./plugins
-```
-
 And this **once** (if the exit code is 0 then it's all good):
 ```sh
 docker compose up airflow-init
 ```
 
 You can then run the whole docker:
-
 ```sh
 docker compose up
 ```

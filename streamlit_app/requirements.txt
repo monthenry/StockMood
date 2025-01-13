@@ -7,3 +7,5 @@ matplotlib==3.8.0       # Plotting
 scipy==1.11.2           # Scientific computing
 requests==2.31.0        # HTTP requests
 plotly==5.15.0          # Interactive plotting
+sqlalchemy==1.4.0       # SQL toolkit
+psycopg2-binary

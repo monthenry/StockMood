@@ -324,3 +324,4 @@ services:
 
 volumes:
   postgres-db-volume:
+  influxdb-data:

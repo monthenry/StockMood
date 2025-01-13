@@ -1,28 +1,43 @@
 import datetime
 import os
 import json
-import datetime
+import csv
+import re
 from math import exp
 import requests
-import redis
 import pandas as pd
-import json
-import re
-from pymongo import MongoClient
+import tarfile
+from concurrent.futures import ThreadPoolExecutor
 from airflow import DAG
 from airflow.operators.python_operator import PythonOperator, BranchPythonOperator
 from airflow.operators.bash_operator import BashOperator
 from airflow.operators.dummy_operator import DummyOperator
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
-from airflow.sensors.external_task_sensor import ExternalTaskSensor
-import pandas as pd
-import json
-import os
-import tarfile
+from pymongo import MongoClient
+import redis
 import nltk
 from nltk.sentiment import SentimentIntensityAnalyzer
-from multiprocessing import Pool
-from concurrent.futures import ThreadPoolExecutor
+import psycopg2
+from sqlalchemy import create_engine
+import logging
+
+# MongoDB Configuration
+MONGO_URI = "mongodb://root:example@mongo:27017/"
+DB_NAME = "bloomberg_db"
+COLLECTION_NAME = "sentiment_articles"
+
+# Redis Configuration
+REDIS_HOST = 'redis'
+REDIS_PORT = 6379
+REDIS_DB = 0
+
+# InfluxDB Configuration
+INFLUXDB_HOST = 'influxdb'
+INFLUXDB_PORT = 8086
+INFLUXDB_DB = 'financial_data'
+
+# Set up your PostgreSQL connection string
+POSTGRES_URI = 'postgresql://airflow:airflow@postgres:5432/airflow'
 
 # Fonction pour vérifier la connexion Internet
 def check_internet_connection():
@@ -170,7 +185,7 @@ def push_to_redis(output_folder):
         data = json.load(fichier_json)
     
     # Connexion à Redis
-    r = redis.Redis(host='redis', port=6379, db=0)
+    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
     
     # Pousser les données dans Redis
     for entreprise, valeurs in data.items():
@@ -212,6 +227,7 @@ def extract_archive(input_folder, output_folder, output_file):
 
     print("Extraction complete.")
 
+# Process a single article
 def process_article(article_path):
     """
     Reads a single article and returns a dictionary of its data if it's valid.
@@ -237,7 +253,7 @@ def process_article(article_path):
             return None
 
 # Converts extracted article files to a CSV format.
-def transform_to_csv(input_folder, output_csv):
+def transform_to_csv(input_folder, output_csv, max_workers=4, batch_size=100):
     # Check if the output CSV file already exists
     if os.path.exists(output_csv):
         print(f"{output_csv} already exists. Skipping transformation.")
@@ -246,7 +262,7 @@ def transform_to_csv(input_folder, output_csv):
     # Initialize a list to store article data
     articles = []
 
-    # Collect all article files first
+    # Collect all article file paths
     article_paths = []
     for date_folder in os.listdir(input_folder):
         date_path = os.path.join(input_folder, date_folder)
@@ -257,22 +273,27 @@ def transform_to_csv(input_folder, output_csv):
                 if os.path.isfile(article_path):
                     article_paths.append(article_path)
 
-    # Parallelize the file reading using ThreadPoolExecutor
-    with ThreadPoolExecutor() as executor:
-        results = executor.map(process_article, article_paths)
+    # Open the CSV file for incremental writing
+    with open(output_csv, mode='w', encoding='utf-8', newline='') as file:
+        writer = csv.writer(file)
+        # Write the header to the CSV file (adjust column names to match your data)
+        writer.writerow(["title", "author", "date", "link", "content"])
 
-    # Filter out None values (invalid articles)
-    articles = [article for article in results if article is not None]
+        # Process files in batches
+        for i in range(0, len(article_paths), batch_size):
+            batch = article_paths[i:i + batch_size]
+            print(f"Processing batch {i // batch_size + 1} with {len(batch)} files.")
 
-    if articles:
-        # Create a pandas DataFrame from the articles list
-        df = pd.DataFrame(articles)
+            # Use ThreadPoolExecutor to parallelize the processing
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                results = executor.map(process_article, batch)
 
-        # Save the DataFrame to a CSV file for future use
-        df.to_csv(output_csv, index=False, encoding="utf-8")
-        print("CSV generation complete.")
-    else:
-        print("No valid articles found.")
+            # Write valid articles directly to the CSV file
+            for article in results:
+                if article is not None:
+                    writer.writerow(article.values())
+
+    print("CSV generation complete.")
 
 def clean_csv_data(output_folder, input_filename, output_filename):
     input_filepath = os.path.join(output_folder, input_filename)
@@ -322,6 +343,11 @@ def filter_and_convert_to_json(output_folder, input_filename, output_filename):
     except Exception as e:
         print(f"Erreur lors de la lecture du fichier : {e}")
         return
+
+    # Convertir la colonne 'date' en datetime pour faciliter le filtrage
+    df['date'] = pd.to_datetime(df['date'], errors='coerce')  # 'coerce' pour gérer les erreurs de conversion
+    df = df[df['date'] >= '2010-01-01'] # Filtrer les articles dont la date est après 2010
+    df['date'] = df['date'].dt.strftime('%Y-%m-%d')
 
     # Remplacer les valeurs NaN dans 'content' par des chaînes vides
     df['content'] = df['content'].fillna('')
@@ -490,9 +516,9 @@ def push_to_mongo(output_folder):
         data = json.load(fichier_json)
 
     # Connexion à MongoDB
-    client = MongoClient("mongodb://root:example@mongo:27017/")
-    db = client["bloomberg_db"]  # Nom de la base de données
-    collection = db["sentiment_articles"]  # Nom de la collection
+    client = MongoClient(MONGO_URI)
+    db = client[DB_NAME]  # Nom de la base de données
+    collection = db[COLLECTION_NAME]  # Nom de la collection
 
     # Insérer les données dans MongoDB
     for symbol, articles in data.items():
@@ -503,6 +529,147 @@ def push_to_mongo(output_folder):
             print(f"Document ajouté à MongoDB : {article}")
 
     print(f"Les données ont été insérées dans MongoDB dans la base 'bloomberg_db', collection 'sentiment_articles'.")
+
+# Fetch data from MongoDB
+def fetch_mongo_data():
+    client = MongoClient(MONGO_URI)
+    db = client[DB_NAME]
+    collection = db[COLLECTION_NAME]
+    data = list(collection.find({}, {"_id": 0}))
+    return pd.DataFrame(data)
+
+# Fetch data from Redis
+def fetch_redis_data():
+    r = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+    keys = r.keys("finance_data:*")
+    data = []
+    for key in keys:
+        entries = r.hgetall(key)
+        for date, values in entries.items():
+            parsed_values = json.loads(values)
+            parsed_values.update({"symbol": key.replace("finance_data:", ""), "date": date})
+            data.append(parsed_values)
+    return pd.DataFrame(data)
+
+# Fill missing dates and forward-fill data
+def preprocess_data():
+    mongo_data = fetch_mongo_data()
+    redis_data = fetch_redis_data()
+
+    # Process MongoDB Sentiment Data
+    if not mongo_data.empty:
+        mongo_data["date"] = pd.to_datetime(mongo_data["date"])
+        grouped_mongo = (
+            mongo_data.groupby([mongo_data["date"].dt.date, "symbol"])
+            .agg({"relative_sentiment": "mean"})
+            .rename(columns={"relative_sentiment": "avg_sentiment"})
+            .reset_index()
+        )
+    else:
+        grouped_mongo = pd.DataFrame()
+
+    # Process Redis Financial Data
+    if not redis_data.empty:
+        redis_data["date"] = pd.to_datetime(redis_data["date"]).dt.date
+    else:
+        redis_data = pd.DataFrame()
+
+    # Merge and Fill Missing Dates
+    if not grouped_mongo.empty and not redis_data.empty:
+        combined = pd.merge(
+            grouped_mongo,
+            redis_data,
+            on=["date", "symbol"],
+            how="outer"
+        )
+        combined = combined.sort_values(["symbol", "date"])
+        combined["date"] = pd.to_datetime(combined["date"])
+        
+        # Fill missing dates and forward-fill data
+        date_range = pd.date_range(start=combined["date"].min(), end=combined["date"].max())
+        filled_data = (
+            combined.set_index("date")
+            .groupby("symbol")
+            .apply(lambda group: group.reindex(date_range).ffill().bfill())
+            .reset_index(level=0, drop=True)
+            .reset_index()
+        )
+        return filled_data
+
+    return pd.DataFrame()
+
+# Function to create the table if it doesn't exist
+def create_table_if_not_exists():
+    conn = psycopg2.connect(POSTGRES_URI)
+    cursor = conn.cursor()
+    
+    # Create table if it does not exist
+    create_table_query = '''
+    CREATE TABLE IF NOT EXISTS financial_sentiment (
+        id SERIAL PRIMARY KEY,
+        symbol VARCHAR(20) NOT NULL,
+        date TIMESTAMP NOT NULL,
+        avg_sentiment FLOAT,
+        close FLOAT
+    );
+    '''
+    
+    create_indexes_query = '''
+    CREATE INDEX IF NOT EXISTS idx_financial_sentiment_date ON financial_sentiment (date);
+    CREATE INDEX IF NOT EXISTS idx_financial_sentiment_symbol ON financial_sentiment (symbol);
+    '''
+    
+    cursor.execute(create_table_query)
+    cursor.execute(create_indexes_query)
+    
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+# Function to push data to PostgreSQL
+def push_to_postgres():
+    # Create table if not exists
+    create_table_if_not_exists()
+
+    # Process and insert data
+    data = preprocess_data()
+
+    # Debugging: Display columns of the DataFrame
+    if data is not None:
+        logging.info(f"DataFrame columns: {data.columns.tolist()}")
+        logging.info(f"DataFrame head: {data.head()}")
+    else:
+        logging.error("The processed data is None or empty.")
+        raise ValueError("Data is empty or not processed correctly.")
+
+    # Rename index to date if necessary
+    if 'index' in data.columns:
+        data = data.rename(columns={'index': 'date'})
+
+    # Set up PostgreSQL connection using SQLAlchemy
+    engine = create_engine(POSTGRES_URI)
+
+    # Prepare the data to insert into the database
+    try:
+        # Ensure 'date' is properly formatted
+        data['date'] = pd.to_datetime(data['date'])
+        
+        # Select only required columns
+        data_to_insert = data[['symbol', 'date', 'avg_sentiment', 'close']]
+        
+        # Convert date to string format if required by the database
+        data_to_insert['date'] = data_to_insert['date'].dt.strftime('%Y-%m-%d %H:%M:%S')
+    except KeyError as e:
+        logging.error(f"KeyError: {e}. Available columns: {data.columns.tolist()}")
+        raise
+
+    # Insert data into PostgreSQL
+    try:
+        data_to_insert.to_sql('financial_sentiment', engine, if_exists='append', index=False)
+        logging.info("Data successfully inserted into the 'financial_sentiment' table.")
+    except Exception as e:
+        logging.error(f"Error inserting data into PostgreSQL: {e}")
+        raise
 
 # Création du DAG
 # Paramètres par défaut du DAG
@@ -650,6 +817,16 @@ sentiment_analysis_task = PythonOperator(
     dag=wrangling_dag
 )
 
+push_to_mongo_task = PythonOperator(
+    task_id='push_to_mongo',
+    python_callable=push_to_mongo,
+    op_kwargs={
+        'output_folder': '/opt/airflow/data',
+    },
+    dag=wrangling_dag,
+    trigger_rule='none_failed_min_one_success'
+)
+
 clean_task = PythonOperator(
     task_id='clean_json_data',
     python_callable=clean_json_data,
@@ -666,6 +843,14 @@ rearrange_task = PythonOperator(
     trigger_rule='none_failed_min_one_success'
 )
 
+push_to_redis_task = PythonOperator(
+    task_id='push_to_redis',
+    python_callable=push_to_redis,
+    op_kwargs={'output_folder': '/opt/airflow/data'},
+    dag=wrangling_dag,
+    trigger_rule='none_failed_min_one_success'
+)
+
 trigger_production_dag = TriggerDagRunOperator(
     task_id='trigger_production_dag',
     trigger_dag_id='StockMood_Production',
@@ -673,8 +858,8 @@ trigger_production_dag = TriggerDagRunOperator(
     trigger_rule='all_success'
 )
 
-clean_csv_task >> filter_and_convert_task >> reformat_json_task >> sentiment_analysis_task >> trigger_production_dag
-clean_task >> rearrange_task >> trigger_production_dag
+clean_csv_task >> filter_and_convert_task >> reformat_json_task >> sentiment_analysis_task >> push_to_mongo_task >> trigger_production_dag
+clean_task >> rearrange_task >> push_to_redis_task >> trigger_production_dag
 
 ### PRODUCTION PIPELINE ###
 production_dag = DAG(
@@ -686,22 +871,39 @@ production_dag = DAG(
     max_active_tasks=10
 )
 
-push_to_mongo_task = PythonOperator(
-    task_id='push_to_mongo',
-    python_callable=push_to_mongo,
-    op_kwargs={
-        'output_folder': '/opt/airflow/data',
-    },
-    dag=production_dag,
-    trigger_rule='none_failed_min_one_success'
+production_dag = DAG(
+    dag_id='StockMood_Production',
+    default_args=default_args_dict,
+    catchup=False,
+    schedule_interval=None,  # Only manual runs
+    is_paused_upon_creation=False,  # DAG starts unpaused by default
+    max_active_tasks=10
 )
 
-push_to_redis_task = PythonOperator(
-    task_id='push_to_redis',
-    python_callable=push_to_redis,
-    op_kwargs={'output_folder': '/opt/airflow/data'},
-    dag=production_dag,
-    trigger_rule='none_failed_min_one_success'
+# Tasks in the pipeline
+fetch_mongo_task = PythonOperator(
+    task_id='fetch_mongo_data',
+    python_callable=fetch_mongo_data,
+    dag=production_dag
 )
 
-push_to_mongo_task >> push_to_redis_task
+fetch_redis_task = PythonOperator(
+    task_id='fetch_redis_data',
+    python_callable=fetch_redis_data,
+    dag=production_dag
+)
+
+prepare_production_data_task = PythonOperator(
+    task_id='prepare_production_data',
+    python_callable=preprocess_data,
+    dag=production_dag
+)
+
+push_postgres_task = PythonOperator(
+    task_id='push_to_postgres',
+    python_callable=push_to_postgres,
+    dag=production_dag
+)
+
+# Task sequence
+[fetch_mongo_task, fetch_redis_task] >> prepare_production_data_task >> push_postgres_task
