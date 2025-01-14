@@ -109,7 +109,7 @@ def clean_json_data(output_folder):
 
                 # Convert timestamp to datetime and filter between 2007 and 2013
                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
-                df = df[(df['timestamp'].dt.year >= 2007) & (df['timestamp'].dt.year <= 2013)]
+                df = df[(df['timestamp'].dt.year >= 2010) & (df['timestamp'].dt.year <= 2013)]
 
                 # Sort the DataFrame by timestamp (ascending order)
                 df = df.sort_values(by='timestamp', ascending=True)
