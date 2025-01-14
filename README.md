@@ -35,10 +35,10 @@ We chose two complementary data sources: Bloomberg articles and market data from
 The first DAG is responsible for data collection.  
 
 - **Bloomberg Articles:**  
-  Articles are extracted from archived folders, parsed, and stored in a raw data zone for further processing.  
+  Articles are extracted from archived folders, parsed, and stored as CSV file (data plane) in a raw data zone for further processing.  
 
 - **Yahoo Finance Market Data:**  
-  Stock data is retrieved using the Yahoo Finance API. Historical data is downloaded and stored in the raw zone.  
+  Stock data is retrieved using the Yahoo Finance API. Historical data is downloaded and stored in the raw zone as JSON file (data plane).
 
 ```mermaid
 flowchart TD
@@ -64,13 +64,13 @@ flowchart TD
 The second DAG cleanses, integrates and augment the data (droping columns, handling null values, handling incorrect dates, computing sentiment scores and stock prices shift, ...).  
 
 - **Bloomberg Articles:**  
-  Sentiment analysis is performed using NLP tools like `TextBlob` or `VADER`. The results are enriched with metadata (e.g., company mentions).  
+  The articles are cleaned, converted to JSON and Sentiment analysis is performed using NLP tools like `TextBlob` or `VADER`. The results are enriched with metadata (e.g., company mentions). Then the data is pushed onto MongoDB as JSON documents. This is the staging zone for Bloomberg Articles.  
 
 - **Yahoo Finance Data:**  
-  Market data is cleaned and aligned with article timestamps to facilitate correlation analysis.  
+  Market data is cleaned and aligned with article timestamps to facilitate correlation analysis. When the data is ready, it is pushed onto Redis using dates as keys for easy and efficient stock value retrieval. The Redis database is the staging zone for the Yahoo Finance Data.
 
 - **Integration:**  
-  Both datasets are merged in a staging zone to prepare for production analysis.  
+  As said before, both datasets end up in their respective staging zone and are now ready to be used for different use cases (for that purpose we'll refine the data in our production pipeline).  
 
 ```mermaid
 flowchart TD
@@ -94,14 +94,11 @@ flowchart TD
 
 ### Production Phase
 
-The final DAG transforms the staged data into production ready data by filtering out useless columns and merging data together.  
+The final DAG transforms the staged data into production ready data by filtering out useless columns and merging data together around date keys. We initially wanted to use InfluxDB to manage data as timeseries as this would have been the most straightforward but we had too much troubles installing InfluxDB on our airflow docker image so we ended up using PostgreSQL which is less efficient for our use case but it shouldn't pose a problem as we are not working with big data.  
 
-- Sentiment scores and stock data are ploted to look for correlations.  
-- Significant global events are identified and visualized using temporal overlays.  
-
-A Streamlit dashboard is used to present:  
-- Correlation plots.  
-- Stock price behaviours on specific events.  
+On the vizualisation side, we simply had to pull the production ready data from PostgreSQL and then:  
+- **Correlation plots:** Sentiment scores and stock data are ploted to look for correlations.  
+- **Stock price behaviours on specific events:** Significant global events are identified and visualized to study their impact on sentiment and stock price.  
 
 ```mermaid
 flowchart TD
@@ -120,7 +117,7 @@ flowchart TD
 ![Production DAG](./images/dag_production.png)  
 
 ## Queries 
-Once the data is stored in postgres and production ready, we access it using Streamlit for our datamart, the main query is as follow:
+Once the data is stored in PostgreSQL and production ready, we access it using Streamlit for our datamart, the main query is as follow (really easy because the data as been tailored specifically for our use case through our production pipeline):
 ```SQL
 SELECT date, avg_sentiment, close
 FROM financial_sentiment
